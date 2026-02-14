@@ -1,0 +1,7 @@
+{
+  "name": "Financial Time Machine",
+  "description": "Travel back in time to alter your financial history and visualize the ripple effects on your present net worth using AI-driven scenario modeling.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
