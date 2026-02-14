@@ -21,22 +21,11 @@ const App: React.FC = () => {
     }
   ]);
 
-  // Recalculate the Original Branch on mount to ensure the baseline math is consistent with the engine
-  useEffect(() => {
-    const trueOriginalWorth = calculateCompoundGrowth(0, INITIAL_EVENTS, []);
-    setBranches(prev => prev.map(b => 
-      b.id === 'original' 
-        ? { ...b, calculatedNetWorth: trueOriginalWorth }
-        : b
-    ));
-  }, []);
-
   const selectedBranch = branches.find(b => b.id === selectedBranchId) || branches[0];
-  const originalBranch = branches.find(b => b.id === 'original') || MOCK_ORIGINAL_BRANCH;
 
   const createBranch = async (content: string, overrideYear?: number, fromBranchId?: string) => {
     const parentId = fromBranchId || selectedBranchId;
-    const parentBranch = branches.find(b => b.id === parentId) || branches[0];
+    const parentBranch = branches.find(b => b.id === parentId) || MOCK_ORIGINAL_BRANCH;
     
     setIsProcessing(true);
 
@@ -50,29 +39,10 @@ const App: React.FC = () => {
       const scenario = await generateScenario(contextStr);
       const newBranchId = `alt-${Date.now()}`;
       
+      // Inherit history from parent up to divergence year
       const divergenceYear = overrideYear || scenario.divergenceYear;
-
-      // 1. Historical Events: Keep everything BEFORE the divergence
       const historicalEvents = parentBranch.events.filter(e => e.year < divergenceYear);
-
-      // 2. Future Events: Keep everything strictly AFTER the divergence
-      // This ensures we don't lose the 2023 Promotion if we change 2022.
-      // We only keep them if the AI hasn't explicitly replaced them (same year + same type).
-      const newEventKeys = new Set(scenario.newEvents.map(e => `${e.year}-${e.type}`));
-      const parentFutureEvents = parentBranch.events.filter(e => e.year > divergenceYear);
-      
-      const preservedFutureEvents = parentFutureEvents.filter(pe => {
-        // If AI generated a conflict (same year & type), we prefer the AI's version.
-        // Otherwise, we keep the original future event.
-        return !newEventKeys.has(`${pe.year}-${pe.type}`);
-      });
-
-      // 3. Combined: History + New AI Events (Divergence) + Preserved Future
-      const combinedEvents = [
-        ...historicalEvents, 
-        ...scenario.newEvents, 
-        ...preservedFutureEvents
-      ].sort((a, b) => a.year - b.year);
+      const combinedEvents = [...historicalEvents, ...scenario.newEvents];
 
       // Use the AI-generated market trends for the new timeline calculation
       const newWorth = calculateCompoundGrowth(0, combinedEvents, scenario.marketTrends);
@@ -175,7 +145,7 @@ const App: React.FC = () => {
           
           <StatCards 
             branch={selectedBranch} 
-            originalWorth={originalBranch.calculatedNetWorth} 
+            originalWorth={MOCK_ORIGINAL_BRANCH.calculatedNetWorth} 
           />
 
           <div className="glass p-6 rounded-2xl relative overflow-hidden group border border-slate-700/50">
