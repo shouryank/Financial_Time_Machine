@@ -30,6 +30,18 @@ Context of original timeline (User is currently upper-middle class):
 - 2021: House downpayment ($100k)
 - 2023: Senior role ($130k)
 
+5. **Relative Date Resolution (MANDATORY):**
+   - Assume current year is ${CURRENT_YEAR}.
+   - Convert relative phrases to exact years in 'divergenceYear' and events:
+     - "3 years ago" => ${CURRENT_YEAR - 3}
+     - "a year ago", "one year ago", "last year" => ${CURRENT_YEAR - 1}
+     - "this year" => ${CURRENT_YEAR}
+   - Always output explicit integer years. Never output relative phrases in year fields.
+
+6. **Intent Fidelity (MANDATORY):**
+   - If user says they "bought/purchased" a car/vehicle for X, include an expense event for that amount in the resolved year.
+   - Do not flip the sign or convert it into income/investment.
+
 Return JSON matching the schema.
 For 'marketTrends', provide an entry for EVERY year from the divergenceYear to ${CURRENT_YEAR}.
 For 'newEvents', include BOTH the change AND the continuing life events.

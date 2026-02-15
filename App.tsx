@@ -1,12 +1,78 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { TimelineBranch, ChatMessage, SimulationScenario, FinancialEvent } from './types';
-import { MOCK_ORIGINAL_BRANCH, INITIAL_EVENTS } from './constants';
+import React, { useState } from 'react';
+import { TimelineBranch, ChatMessage, FinancialEvent } from './types';
+import { MOCK_ORIGINAL_BRANCH, START_YEAR, CURRENT_YEAR } from './constants';
 import TimelineGraph from './components/TimelineGraph';
 import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
 import { generateScenario } from './services/geminiService';
-import { calculateCompoundGrowth, formatCurrency } from './services/financeUtils';
+import { formatCurrency } from './services/financeUtils';
+
+const parseAmountFromPrompt = (text: string): number | null => {
+  const matches = [...text.matchAll(/\$?\s*(\d+(?:\.\d+)?)\s*([kKmM])?/g)];
+  if (matches.length === 0) return null;
+  const amounts = matches
+    .map(match => {
+      const base = parseFloat(match[1]);
+      if (!Number.isFinite(base)) return null;
+      const suffix = (match[2] || '').toLowerCase();
+      if (suffix === 'k') return Math.round(base * 1_000);
+      if (suffix === 'm') return Math.round(base * 1_000_000);
+      return Math.round(base);
+    })
+    .filter((value): value is number => value !== null);
+  if (amounts.length === 0) return null;
+  return Math.max(...amounts);
+};
+
+const parseYearsAgoFromPrompt = (text: string): number | null => {
+  const lower = text.toLowerCase();
+
+  const numericMatch = lower.match(/(\d+)\s*(?:years?|yrs?)\s+ago/);
+  if (numericMatch) {
+    const years = Number(numericMatch[1]);
+    if (Number.isFinite(years) && years >= 0) return years;
+  }
+
+  if (/\b(a|one)\s+year\s+ago\b/.test(lower) || /\blast year\b/.test(lower)) return 1;
+  if (/\bthis year\b/.test(lower)) return 0;
+
+  const wordToNumber: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10
+  };
+  const wordMatch = lower.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+years?\s+ago\b/);
+  if (wordMatch) return wordToNumber[wordMatch[1]] ?? null;
+
+  return null;
+};
+
+const inferFallbackEventFromPrompt = (text: string, year: number): FinancialEvent | null => {
+  const lower = text.toLowerCase();
+  const amount = parseAmountFromPrompt(text);
+  if (!amount || amount <= 0) return null;
+
+  const buyIntent = /buy|bought|purchase|purchased|get/i.test(lower);
+  const isCar = /car|vehicle|auto|suv|sedan|truck/i.test(lower);
+  if (buyIntent && isCar) {
+    return {
+      year,
+      label: 'Car Purchase',
+      amount,
+      type: 'expense',
+      description: 'User-requested vehicle purchase.'
+    };
+  }
+  return null;
+};
 
 const App: React.FC = () => {
   const [branches, setBranches] = useState<TimelineBranch[]>([MOCK_ORIGINAL_BRANCH]);
@@ -22,16 +88,22 @@ const App: React.FC = () => {
   ]);
 
   const selectedBranch = branches.find(b => b.id === selectedBranchId) || branches[0];
+  const originalBranch = branches.find(b => b.id === 'original') || MOCK_ORIGINAL_BRANCH;
 
   const createBranch = async (content: string, overrideYear?: number, fromBranchId?: string) => {
     const parentId = fromBranchId || selectedBranchId;
     const parentBranch = branches.find(b => b.id === parentId) || MOCK_ORIGINAL_BRANCH;
+    const yearsAgo = parseYearsAgoFromPrompt(content);
+    const inferredYear = yearsAgo !== null ? CURRENT_YEAR - yearsAgo : null;
+    const interpretedDivergenceYear = overrideYear || inferredYear || undefined;
     
     setIsProcessing(true);
 
     // Build context for AI
     const contextStr = `Current Timeline context (${parentBranch.name}):
+    Current Year: ${CURRENT_YEAR}
     Events: ${parentBranch.events.map(e => `${e.year}: ${e.label} ($${e.amount})`).join(', ')}
+    ${interpretedDivergenceYear !== undefined ? `Interpreted divergence year from user language: ${interpretedDivergenceYear}` : ''}
     ${overrideYear ? `Target Year to change: ${overrideYear}` : ''}
     User Request: ${content}`;
 
@@ -39,13 +111,67 @@ const App: React.FC = () => {
       const scenario = await generateScenario(contextStr);
       const newBranchId = `alt-${Date.now()}`;
       
-      // Inherit history from parent up to divergence year
-      const divergenceYear = overrideYear || scenario.divergenceYear;
-      const historicalEvents = parentBranch.events.filter(e => e.year < divergenceYear);
-      const combinedEvents = [...historicalEvents, ...scenario.newEvents];
+      const divergenceYear = overrideYear || inferredYear || scenario.divergenceYear;
+      const validTypes: FinancialEvent['type'][] = ['income', 'expense', 'investment'];
+      const aiDivergenceEvents = scenario.newEvents
+        .filter(e => validTypes.includes(e.type as FinancialEvent['type']))
+        .filter(e => e.year >= START_YEAR && e.year <= CURRENT_YEAR)
+        .filter(e => e.year === divergenceYear)
+        .map(e => ({
+          ...e,
+          type: e.type as FinancialEvent['type'],
+          amount: Math.abs(Number.isFinite(e.amount) ? e.amount : 0)
+        }));
+      const fallbackEvent = inferFallbackEventFromPrompt(content, divergenceYear);
+      const hasEquivalentExpense = fallbackEvent
+        ? aiDivergenceEvents.some(e => e.type === 'expense' && e.amount === fallbackEvent.amount)
+        : false;
+      const sanitizedNewEvents = fallbackEvent && !hasEquivalentExpense
+        ? [...aiDivergenceEvents, fallbackEvent]
+        : aiDivergenceEvents;
 
-      // Use the AI-generated market trends for the new timeline calculation
-      const newWorth = calculateCompoundGrowth(0, combinedEvents, scenario.marketTrends);
+      // Preserve parent timeline and only replace what AI explicitly changes (same year+type).
+      const historicalEvents = parentBranch.events.filter(e => e.year < divergenceYear);
+      const newEventKeys = new Set(sanitizedNewEvents.map(e => `${e.year}-${e.type}`));
+      const parentDivergenceEvents = parentBranch.events.filter(e => e.year === divergenceYear);
+      const preservedDivergenceEvents = parentDivergenceEvents.filter(e => !newEventKeys.has(`${e.year}-${e.type}`));
+      const parentFutureEvents = parentBranch.events.filter(e => e.year > divergenceYear);
+      const preservedFutureEvents = parentFutureEvents.filter(e => !newEventKeys.has(`${e.year}-${e.type}`));
+
+      const combinedEvents = [
+        ...historicalEvents,
+        ...preservedDivergenceEvents,
+        ...sanitizedNewEvents,
+        ...preservedFutureEvents
+      ].sort((a, b) => a.year - b.year);
+
+      // Value branches as direct deltas from parent after divergence:
+      // expense lowers worth, income/investment increase worth.
+      const getSignedEffect = (event: FinancialEvent): number => {
+        if (event.type === 'expense') return -event.amount;
+        return event.amount;
+      };
+
+      const aggregateEffectsByYearType = (events: FinancialEvent[]): Map<string, number> => {
+        const totals = new Map<string, number>();
+        for (const event of events) {
+          if (event.year < divergenceYear) continue;
+          const key = `${event.year}-${event.type}`;
+          const prev = totals.get(key) || 0;
+          totals.set(key, prev + getSignedEffect(event));
+        }
+        return totals;
+      };
+
+      const parentEffects = aggregateEffectsByYearType(parentBranch.events);
+      const branchEffects = aggregateEffectsByYearType(combinedEvents);
+      const effectKeys = new Set([...parentEffects.keys(), ...branchEffects.keys()]);
+      let deltaFromParent = 0;
+      for (const key of effectKeys) {
+        deltaFromParent += (branchEffects.get(key) || 0) - (parentEffects.get(key) || 0);
+      }
+
+      const newWorth = Math.round(parentBranch.calculatedNetWorth + deltaFromParent);
 
       const newBranch: TimelineBranch = {
         id: newBranchId,
@@ -145,7 +271,7 @@ const App: React.FC = () => {
           
           <StatCards 
             branch={selectedBranch} 
-            originalWorth={MOCK_ORIGINAL_BRANCH.calculatedNetWorth} 
+            originalBranch={originalBranch} 
           />
 
           <div className="glass p-6 rounded-2xl relative overflow-hidden group border border-slate-700/50">
