@@ -14,31 +14,40 @@ type AssetLineItem = {
   purchaseAmount: number;
   currentValue: number;
   yearsHeld: number;
-  annualDepreciation: number;
+  annualRate: number;
+  trend: 'depreciate' | 'appreciate';
 };
 
-const getAssetProfile = (label: string, description: string) => {
+const getAssetProfile = (label: string, description: string, eventType: TimelineBranch['events'][number]['type']) => {
   const text = `${label} ${description}`.toLowerCase();
-  if (/car|vehicle|auto|suv|sedan|truck/.test(text)) return { type: 'Vehicle', annualDepreciation: 0.15 };
-  if (/phone|laptop|electronics|computer/.test(text)) return { type: 'Electronics', annualDepreciation: 0.25 };
-  if (/furniture|appliance/.test(text)) return { type: 'Household', annualDepreciation: 0.12 };
+  if (/car|vehicle|auto|suv|sedan|truck/.test(text)) return { type: 'Vehicle', annualRate: 0.15, trend: 'depreciate' as const };
+  if (/house|home|land|property|real estate|apartment|condo/.test(text)) return { type: 'Real Estate', annualRate: 0.04, trend: 'appreciate' as const };
+  if (/401k|retirement|ira|pension|stock|stocks|etf|mutual fund|index fund|shares|equity|crypto|bitcoin|btc|ethereum|eth/.test(text)) {
+    return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const };
+  }
+  if (eventType === 'investment') return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const };
+  if (/phone|laptop|electronics|computer/.test(text)) return { type: 'Electronics', annualRate: 0.25, trend: 'depreciate' as const };
+  if (/furniture|appliance/.test(text)) return { type: 'Household', annualRate: 0.12, trend: 'depreciate' as const };
   return null;
 };
 
 const buildAssetItems = (events: TimelineBranch['events']): AssetLineItem[] => {
   return events
-    .filter(e => e.type === 'expense')
+    .filter(e => e.type === 'expense' || e.type === 'investment')
     .map(e => {
-      const profile = getAssetProfile(e.label, e.description);
+      const profile = getAssetProfile(e.label, e.description, e.type);
       if (!profile) return null;
       const yearsHeld = Math.max(0, CURRENT_YEAR - e.year);
-      const currentValue = Math.max(0, Math.round(e.amount * Math.pow(1 - profile.annualDepreciation, yearsHeld)));
+      const currentValue = profile.trend === 'depreciate'
+        ? Math.max(0, Math.round(e.amount * Math.pow(1 - profile.annualRate, yearsHeld)))
+        : Math.max(0, Math.round(e.amount * Math.pow(1 + profile.annualRate, yearsHeld)));
       return {
-        label: `${profile.type} (${e.year})`,
+        label: `${profile.type}: ${e.label} (${e.year})`,
         purchaseAmount: e.amount,
         currentValue,
         yearsHeld,
-        annualDepreciation: profile.annualDepreciation
+        annualRate: profile.annualRate,
+        trend: profile.trend
       };
     })
     .filter((item): item is AssetLineItem => Boolean(item));
@@ -57,6 +66,10 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
   const originalTotalWorth = originalBranch.calculatedNetWorth + originalAssetsTotal;
   const difference = totalNetWorth - originalTotalWorth;
   const isPositive = difference >= 0;
+  const liquidFunds = branch.calculatedNetWorth;
+  const originalLiquidFunds = originalBranch.calculatedNetWorth;
+  const liquidDifference = liquidFunds - originalLiquidFunds;
+  const isLiquidPositive = liquidDifference >= 0;
   const changeEvents = branch.events.filter(e => e.year >= branch.divergenceYear);
   const changeItems = changeEvents.map(event => {
     const signed = event.type === 'expense' ? -event.amount : event.amount;
@@ -67,7 +80,7 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
   });
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-4">
       <div className="glass p-5 rounded-2xl border-l-4 border-l-blue-500 relative overflow-visible group z-0 hover:z-[100]">
         <div className="absolute top-0 right-0 p-3 opacity-10">
           <i className="fa-solid fa-vault text-4xl"></i>
@@ -119,6 +132,23 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
         </div>
       </div>
 
+      <div className={`glass p-5 rounded-2xl border-l-4 ${isLiquidPositive ? 'border-l-teal-500' : 'border-l-orange-500'} relative overflow-visible group z-0 hover:z-[100]`}>
+        <div className="absolute top-0 right-0 p-3 opacity-10">
+          <i className="fa-solid fa-wallet text-4xl"></i>
+        </div>
+        <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Liquid Funds</p>
+        <h2 className="text-3xl font-bold font-heading text-white tracking-tight">
+          {formatCurrency(liquidFunds)}
+        </h2>
+        <p className="text-[10px] text-slate-500 mt-2 italic font-medium">Cash available now</p>
+        <div className={sidePopupLeftClass}>
+          <p className="text-slate-300 font-bold mb-1">Cash Breakdown</p>
+          <p className="text-slate-400">Prime cash: {formatCurrency(originalLiquidFunds)}</p>
+          <p className={`${isLiquidPositive ? 'text-teal-300' : 'text-orange-300'}`}>Cash delta: {isLiquidPositive ? '+' : ''}{formatCurrency(liquidDifference)}</p>
+          <p className="text-slate-500 mt-2">Excludes asset market value. Includes post-divergence income/expenses/investment cash effects.</p>
+        </div>
+      </div>
+
       <div className="glass p-5 rounded-2xl border-l-4 border-l-cyan-500 relative overflow-visible group z-0 hover:z-[100]">
         <div className="absolute top-0 right-0 p-3 opacity-10">
           <i className="fa-solid fa-car-side text-4xl"></i>
@@ -136,7 +166,7 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
             ) : (
               branchAssetItems.map((asset, idx) => (
                 <p key={idx} className="text-cyan-300">
-                  {asset.label}: {formatCurrency(asset.purchaseAmount)} -> {formatCurrency(asset.currentValue)}
+                  {asset.label}: {formatCurrency(asset.purchaseAmount)} -> {formatCurrency(asset.currentValue)} ({asset.trend === 'depreciate' ? '-' : '+'}{(asset.annualRate * 100).toFixed(0)}%/yr)
                 </p>
               ))
             )}
