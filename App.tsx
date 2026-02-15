@@ -7,7 +7,6 @@ import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
 import { generateScenario } from './services/geminiService';
 import { formatCurrency } from './services/financeUtils';
-import { usePlaidLink } from 'react-plaid-link';
 
 const parseAmountFromPrompt = (text: string): number | null => {
   const matches = [...text.matchAll(/\$?\s*(\d+(?:\.\d+)?)\s*([kKmM])?/g)];
@@ -163,11 +162,6 @@ type AtlasTransaction = {
   intent?: string;
 };
 
-type SessionUser = {
-  id: string;
-  email: string;
-};
-
 const mapTransactionType = (tx: AtlasTransaction): FinancialEvent['type'] => {
   if (hasKeyword(tx.category, 'income')) return 'income';
   if (hasKeyword(tx.intent, 'investment')) return 'investment';
@@ -195,9 +189,15 @@ const mapTransactionToFinancialEvent = (tx: AtlasTransaction, index: number): Fi
     year: Math.min(CURRENT_YEAR, Math.max(START_YEAR, year)),
     label,
     amount: safeAmount,
-    type: mapTransactionType(tx.type, Number(tx.amount ?? 0)),
-    description: descriptionParts.length > 0 ? descriptionParts.join(' • ') : 'Imported from Atlas'
+    type: mapTransactionType(tx),
+    description: descriptionParts.length > 0 ? descriptionParts.join(' | ') : 'Imported from Atlas'
   };
+};
+
+const getCashImpact = (event: FinancialEvent): number => {
+  if (event.type === 'income') return event.amount;
+  // expense and investment reduce liquid cash
+  return -event.amount;
 };
 
 const buildOriginalBranchFromTransactions = (transactions: AtlasTransaction[]): TimelineBranch => {
@@ -209,7 +209,7 @@ const buildOriginalBranchFromTransactions = (transactions: AtlasTransaction[]): 
   if (events.length === 0) return MOCK_ORIGINAL_BRANCH;
 
   const divergenceYear = Math.min(...events.map(e => e.year));
-  const calculatedNetWorth = calculateCompoundGrowth(0, events, []);
+  const calculatedNetWorth = Math.round(events.reduce((sum, event) => sum + getCashImpact(event), 0));
 
   return {
     ...MOCK_ORIGINAL_BRANCH,
@@ -338,11 +338,10 @@ const App: React.FC = () => {
         ...preservedFutureEvents
       ].sort((a, b) => a.year - b.year);
 
-      // Value branches as direct deltas from parent after divergence:
-      // expense lowers worth, income/investment increase worth.
+      // Cash delta rules:
+      // income adds cash; expense/investment/liability reduce cash.
       const getSignedEffect = (event: FinancialEvent): number => {
-        if (event.type === 'expense') return -event.amount;
-        return event.amount;
+        return getCashImpact(event);
       };
 
       const aggregateEffectsByYearType = (events: FinancialEvent[]): Map<string, number> => {
