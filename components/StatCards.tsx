@@ -32,8 +32,15 @@ const getAssetProfile = (label: string, description: string, eventType: Timeline
 };
 
 const buildAssetItems = (events: TimelineBranch['events']): AssetLineItem[] => {
+  const isInvestmentIntentEvent = (event: TimelineBranch['events'][number]): boolean => {
+    const description = (event.description || '').toLowerCase();
+    // Atlas imports embed category|intent|accountId in description.
+    // We treat only intent=investment records as asset contributors.
+    return event.type === 'investment' || /\binvestment\b/.test(description);
+  };
+
   return events
-    .filter(e => e.type === 'expense' || e.type === 'investment')
+    .filter(isInvestmentIntentEvent)
     .map(e => {
       const profile = getAssetProfile(e.label, e.description, e.type);
       if (!profile) return null;
@@ -157,12 +164,12 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
         <h2 className="text-3xl font-bold font-heading text-white tracking-tight">
           {formatCurrency(assetsTotal)}
         </h2>
-        <p className="text-[10px] text-slate-500 mt-2 italic font-medium">Depreciated current value</p>
+        <p className="text-[10px] text-slate-500 mt-2 italic font-medium">From intent=investment entries</p>
         <div className={sidePopupLeftClass}>
           <p className="text-slate-300 font-bold mb-1">Asset Line Items</p>
           <div className="space-y-1 pr-1">
             {branchAssetItems.length === 0 ? (
-              <p className="text-slate-500">No tracked tangible assets from this divergence.</p>
+              <p className="text-slate-500">No intent=investment asset entries found.</p>
             ) : (
               branchAssetItems.map((asset, idx) => (
                 <p key={idx} className="text-cyan-300">
