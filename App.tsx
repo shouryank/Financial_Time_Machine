@@ -237,6 +237,125 @@ const App: React.FC = () => {
   useEffect(() => {
     let alive = true;
 
+    const bootstrapSession = async () => {
+      setIsAuthLoading(true);
+      try {
+        const response = await fetch('/api/auth/me');
+        if (!alive) return;
+        if (!response.ok) {
+          setSessionUser(null);
+          return;
+        }
+        const payload: { user?: SessionUser | null } = await response.json();
+        setSessionUser(payload?.user ?? null);
+      } catch {
+        if (!alive) return;
+        setSessionUser(null);
+      } finally {
+        if (!alive) return;
+        setIsAuthLoading(false);
+      }
+    };
+
+    bootstrapSession();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const initializePlaid = async () => {
+      if (!sessionUser) {
+        setPlaidLinkToken(null);
+        setIsPlaidConnected(false);
+        setPlaidError(null);
+        return;
+      }
+
+      setIsPlaidLoading(true);
+      setPlaidError(null);
+
+      try {
+        const [statusResponse, tokenResponse] = await Promise.all([
+          fetch('/api/plaid/status'),
+          fetch('/api/plaid/create_link_token', { method: 'POST' })
+        ]);
+
+        if (!statusResponse.ok) {
+          const statusPayload = await statusResponse.json().catch(() => ({}));
+          throw new Error(statusPayload?.error || `Plaid status failed (${statusResponse.status})`);
+        }
+
+        if (!tokenResponse.ok) {
+          const tokenPayload = await tokenResponse.json().catch(() => ({}));
+          throw new Error(tokenPayload?.error || `Plaid link token failed (${tokenResponse.status})`);
+        }
+
+        const statusPayload: { connected?: boolean } = await statusResponse.json();
+        const tokenPayload: { link_token?: string } = await tokenResponse.json();
+
+        if (!alive) return;
+        setIsPlaidConnected(Boolean(statusPayload.connected));
+        setPlaidLinkToken(tokenPayload.link_token || null);
+      } catch (error: any) {
+        if (!alive) return;
+        setPlaidError(error?.message || 'Unable to initialize Plaid');
+      } finally {
+        if (!alive) return;
+        setIsPlaidLoading(false);
+      }
+    };
+
+    initializePlaid();
+    return () => {
+      alive = false;
+    };
+  }, [sessionUser]);
+
+  const { open: openPlaidLink, ready: isPlaidReady } = usePlaidLink({
+    token: plaidLinkToken,
+    onSuccess: async (publicToken) => {
+      setPlaidError(null);
+      setIsPlaidLoading(true);
+      try {
+        const response = await fetch('/api/plaid/exchange_public_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_token: publicToken })
+        });
+
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload?.error || 'Plaid token exchange failed');
+        }
+
+        setIsPlaidConnected(true);
+      } catch (error: any) {
+        setPlaidError(error?.message || 'Failed to complete Plaid connection');
+      } finally {
+        setIsPlaidLoading(false);
+      }
+    },
+    onExit: (error) => {
+      if (error?.display_message || error?.error_message) {
+        setPlaidError(error.display_message || error.error_message || 'Plaid Link exited with an error');
+      }
+    }
+  });
+
+  const handlePlaidConnect = () => {
+    if (!isPlaidReady || !plaidLinkToken) {
+      setPlaidError('Plaid Link is not ready yet');
+      return;
+    }
+    openPlaidLink();
+  };
+
+  useEffect(() => {
+    let alive = true;
+
     const loadAtlasTransactions = async () => {
       setIsLoadingAtlas(true);
       setAtlasLoadError(null);
@@ -461,8 +580,22 @@ const App: React.FC = () => {
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
             <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Active Link: Plaid</span>
           </div>
-          <button className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group">
-            <i className="fa-solid fa-bolt text-slate-400 group-hover:text-yellow-400 transition-colors"></i>
+          <button
+            onClick={handlePlaidConnect}
+            disabled={isPlaidLoading || !isPlaidReady || isPlaidConnected}
+            className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5 disabled:opacity-60"
+            title={isPlaidConnected ? 'Plaid is connected' : 'Connect Plaid sandbox'}
+          >
+            <div className={`w-2 h-2 rounded-full ${isPlaidConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
+            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+              {isPlaidConnected ? 'Plaid Connected' : isPlaidLoading ? 'Connecting Plaid...' : 'Connect Plaid'}
+            </span>
+          </button>
+          <button
+            onClick={handleLogout}
+            className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group"
+          >
+            <i className="fa-solid fa-right-from-bracket text-slate-400 group-hover:text-rose-400 transition-colors"></i>
           </button>
         </div>
       </header>
