@@ -7,12 +7,17 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "db:insert:transaction": "node scripts/insert-transaction.mjs"
+    "db:insert:transaction": "node scripts/insert-transaction.mjs",
+    "db:migrate:transaction-userid": "node scripts/migrate-transaction-userid.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
+    "bcryptjs": "^3.0.2",
+    "jsonwebtoken": "^9.0.2",
     "mongodb": "^7.1.0",
+    "plaid": "^30.0.0",
     "react": "^19.2.4",
+    "react-plaid-link": "^4.1.1",
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
