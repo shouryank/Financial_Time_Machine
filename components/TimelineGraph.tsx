@@ -2,7 +2,7 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { TimelineBranch } from '../types';
 import { CURRENT_MONTH, START_MONTH, monthRange, formatMonthLabel } from '../constants';
-import { formatCurrency } from '../services/financeUtils';
+import { formatCurrency, computeNetWorthBalance } from '../services/financeUtils';
 import { useTheme } from '../contexts/ThemeContext';
 
 interface TimelineGraphProps {
@@ -87,12 +87,25 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
   })();
   const canPanRight = panOffset > 0;
 
-  // Global min/max balance across all branches for Y axis
+  // Compute net-worth-adjusted balances for each branch (cash + investments + scenario assets)
+  const netWorthMap = useMemo(() => {
+    const map = new Map<string, { month: string; balance: number }[]>();
+    for (const b of branches) {
+      map.set(b.id, computeNetWorthBalance(b));
+    }
+    return map;
+  }, [branches]);
+
+  // Helper to get net worth balance for a branch
+  const getNetWorth = (branchId: string) => netWorthMap.get(branchId) || [];
+
+  // Global min/max balance across all branches for Y axis (using net worth)
   const { minBal, maxBal } = useMemo(() => {
     let min = 0;
     let max = 0;
     for (const b of branches) {
-      for (const entry of b.cumulativeBalance) {
+      const nw = getNetWorth(b.id);
+      for (const entry of nw) {
         if (entry.balance < min) min = entry.balance;
         if (entry.balance > max) max = entry.balance;
       }
@@ -113,9 +126,9 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
     return padding.top + chartH - ratio * chartH;
   };
 
-  // Generate path for a branch's cumulative balance line
+  // Generate path for a branch's net worth line
   const buildLinePath = (branch: TimelineBranch): string => {
-    const points = branch.cumulativeBalance;
+    const points = getNetWorth(branch.id);
     if (points.length === 0) return '';
     return points
       .map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(p.month)} ${getY(p.balance)}`)
@@ -195,7 +208,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
   // Build a Loki-style branching path: horizontal on parent lane, then curves to its own lane
   const buildTimePath = (branch: TimelineBranch): string => {
     const lane = branchLanes.get(branch.id) ?? 0;
-    const points = branch.cumulativeBalance.filter(pt => allMonths.includes(pt.month));
+    const points = getNetWorth(branch.id).filter(pt => allMonths.includes(pt.month));
     if (points.length === 0) return '';
 
     if (branch.isOriginal) {
@@ -364,13 +377,14 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
 
           // Divergence marker for alternate branches
           const divergenceX = !branch.isOriginal ? getX(branch.divergenceMonth) : null;
+          const nwPoints = getNetWorth(branch.id);
           const divergenceEntry = !branch.isOriginal
-            ? branch.cumulativeBalance.find(e => e.month === branch.divergenceMonth)
+            ? nwPoints.find(e => e.month === branch.divergenceMonth)
             : null;
           const divergenceY = divergenceEntry ? getY(divergenceEntry.balance) : null;
 
           // End point for label
-          const lastPoint = branch.cumulativeBalance[branch.cumulativeBalance.length - 1];
+          const lastPoint = nwPoints[nwPoints.length - 1];
 
           return (
             <g key={branch.id} onClick={() => onSelectBranch(branch.id)} className="cursor-pointer group">
@@ -427,7 +441,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
         {/* Interactive month-dot nodes on ALL branches */}
         {branches.map(branch => {
           const isSelectedBranch = selectedBranchId === branch.id;
-          return branch.cumulativeBalance
+          return getNetWorth(branch.id)
             .filter(pt => allMonths.includes(pt.month))
             .map((pt) => {
               const monthIdx = allMonths.indexOf(pt.month);
@@ -527,7 +541,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
           const divY = divX !== null ? getTimeY(parentLane) : null;
 
           // End point
-          const lastPt = branch.cumulativeBalance.filter(p => allMonths.includes(p.month));
+          const lastPt = getNetWorth(branch.id).filter(p => allMonths.includes(p.month));
           const lastMonth = lastPt.length > 0 ? lastPt[lastPt.length - 1] : null;
 
           return (
@@ -585,7 +599,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
           const isSelectedBranch = selectedBranchId === branch.id;
           const lane = branchLanes.get(branch.id) ?? 0;
           const parentLane = branchLanes.get(branch.parentId || '') ?? 0;
-          return branch.cumulativeBalance
+          return getNetWorth(branch.id)
             .filter(pt => allMonths.includes(pt.month))
             .map((pt) => {
               const monthIdx = allMonths.indexOf(pt.month);

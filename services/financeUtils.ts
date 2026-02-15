@@ -1,5 +1,5 @@
 
-import { FinancialEvent, MonthlyBalance, ScenarioAsset } from '../types';
+import { FinancialEvent, MonthlyBalance, ScenarioAsset, TimelineBranch } from '../types';
 import { CURRENT_MONTH, START_MONTH, monthRange } from '../constants';
 
 /**
@@ -194,4 +194,54 @@ export const calculateScenarioAssetPortfolio = (
   const totalPurchaseCost = holdings.reduce((sum, h) => sum + h.purchasePrice, 0);
   const totalOngoingExpenses = holdings.reduce((sum, h) => sum + h.totalExpenses, 0);
   return { holdings, totalAssetValue, totalPurchaseCost, totalOngoingExpenses };
+};
+
+/**
+ * Compute net worth per month for a branch.
+ * Net worth = Cash balance + investment portfolio value + scenario asset values.
+ *
+ * For the Prime timeline: investments from real transactions appreciate over time.
+ * For alternate branches: scenario assets (stocks bought, cars, etc.) also contribute.
+ */
+export const computeNetWorthBalance = (branch: TimelineBranch): MonthlyBalance[] => {
+  const cashPoints = branch.cumulativeBalance;
+  if (cashPoints.length === 0) return [];
+
+  // Gather real investment events (type === 'investment') for the investment portfolio
+  const investmentEvents = branch.events.filter(e => e.type === 'investment');
+
+  // Scenario assets from what-if branches
+  const scenarioAssets = branch.scenarioAssets || [];
+
+  // If there are no investments or scenario assets, net worth = cash
+  if (investmentEvents.length === 0 && scenarioAssets.length === 0) {
+    return cashPoints;
+  }
+
+  return cashPoints.map(pt => {
+    let netWorth = pt.balance;
+
+    // Add appreciated value of each real investment event as of this month
+    for (const inv of investmentEvents) {
+      if (inv.month > pt.month) continue; // not yet purchased
+      const rate = getGrowthRate(inv.label + ' ' + inv.description);
+      const months = Math.max(0, monthsBetween(inv.month, pt.month));
+      const monthlyRate = Math.pow(1 + rate, 1 / 12) - 1;
+      const value = inv.amount * Math.pow(1 + monthlyRate, months);
+      netWorth += Math.round(value);
+    }
+
+    // Add scenario asset values (stocks/cars/etc bought via what-if)
+    for (const asset of scenarioAssets) {
+      if (asset.purchaseMonth > pt.month) continue; // not yet purchased
+      const months = Math.max(0, monthsBetween(asset.purchaseMonth, pt.month));
+      const totalMonths = Math.max(1, monthsBetween(asset.purchaseMonth, CURRENT_MONTH));
+      // Interpolate from purchasePrice to currentValue over the total timeline
+      const fraction = Math.min(1, months / totalMonths);
+      const value = asset.purchasePrice + (asset.currentValue - asset.purchasePrice) * fraction;
+      netWorth += Math.round(value);
+    }
+
+    return { month: pt.month, balance: Math.round(netWorth) };
+  });
 };
