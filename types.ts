@@ -16,6 +16,7 @@ export interface MarketTrend {
 export interface TimelineBranch {
   id: string;
   parentId?: string; // ID of the branch this one diverged from
+  hierarchyCode: string; // Human-readable branch code e.g. 1, 1.1, 1.2.1
   name: string;
   color: string;
   isOriginal: boolean;

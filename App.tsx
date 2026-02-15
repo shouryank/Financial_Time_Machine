@@ -113,7 +113,13 @@ const extractAssetNameFromPrompt = (text: string): string | null => {
   return null;
 };
 
-const getTransactionValidationError = (text: string): string | null => {
+const parseBranchCodeFromPrompt = (text: string): string | null => {
+  const branchMatch = text.match(/\b(?:from|on|using)?\s*branch\s*#?\s*([0-9]+(?:\.[0-9]+)*)\b/i);
+  if (branchMatch) return branchMatch[1];
+  return null;
+};
+
+const getTransactionValidationError = (text: string, branches: TimelineBranch[]): string | null => {
   const lower = text.toLowerCase();
   const isTransactionIntent = /\b(buy|bought|purchase|purchased|invest|invested|put|allocate|acquire|get)\b/.test(lower);
   if (!isTransactionIntent) return null;
@@ -121,14 +127,24 @@ const getTransactionValidationError = (text: string): string | null => {
   const hasYear = parseYearsAgoFromPrompt(text) !== null || parseAbsoluteYearFromPrompt(text) !== null;
   const hasAmount = parseAmountFromPrompt(text) !== null;
   const hasAsset = extractAssetNameFromPrompt(text) !== null;
+  const branchCode = parseBranchCodeFromPrompt(text);
+  const hasBranchReference = branchCode !== null;
+  const hasValidBranch = branchCode ? branches.some(b => b.hierarchyCode === branchCode) : false;
+  const availableCodes = branches.map(b => b.hierarchyCode).join(', ');
 
   const missing: string[] = [];
   if (!hasYear) missing.push('year');
   if (!hasAsset) missing.push('asset name');
   if (!hasAmount) missing.push('amount');
-  if (missing.length === 0) return null;
+  if (!hasBranchReference) missing.push('branch to branch from (e.g. "branch 1" or "branch 1.2")');
+  if (missing.length > 0) {
+    return `I need ${missing.join(', ')} to run this simulation. Please include all required details. Example: "From branch 1, buy a car for $20k 3 years ago." Available branches: ${availableCodes}.`;
+  }
+  if (!hasValidBranch) {
+    return `I couldn't find branch "${branchCode}" in your timeline. Please reference an existing branch code. Available branches: ${availableCodes}.`;
+  }
 
-  return `I need ${missing.join(', ')} to run this simulation. Please include all three: year, asset name, and amount. Example: "Buy a car for $20k 3 years ago."`;
+  return null;
 };
 
 const App: React.FC = () => {
@@ -146,6 +162,10 @@ const App: React.FC = () => {
 
   const selectedBranch = branches.find(b => b.id === selectedBranchId) || branches[0];
   const originalBranch = branches.find(b => b.id === 'original') || MOCK_ORIGINAL_BRANCH;
+  const getNextHierarchyCode = (parentBranch: TimelineBranch): string => {
+    const siblingCount = branches.filter(b => b.parentId === parentBranch.id).length;
+    return `${parentBranch.hierarchyCode}.${siblingCount + 1}`;
+  };
 
   const createBranch = async (content: string, overrideYear?: number, fromBranchId?: string) => {
     const parentId = fromBranchId || selectedBranchId;
@@ -157,7 +177,7 @@ const App: React.FC = () => {
     setIsProcessing(true);
 
     // Build context for AI
-    const contextStr = `Current Timeline context (${parentBranch.name}):
+    const contextStr = `Current Timeline context (Branch ${parentBranch.hierarchyCode}: ${parentBranch.name}):
     Current Year: ${CURRENT_YEAR}
     Events: ${parentBranch.events.map(e => `${e.year}: ${e.label} ($${e.amount})`).join(', ')}
     ${interpretedDivergenceYear !== undefined ? `Interpreted divergence year from user language: ${interpretedDivergenceYear}` : ''}
@@ -167,6 +187,7 @@ const App: React.FC = () => {
     try {
       const scenario = await generateScenario(contextStr);
       const newBranchId = `alt-${Date.now()}`;
+      const hierarchyCode = getNextHierarchyCode(parentBranch);
       
       const divergenceYear = overrideYear || inferredYear || scenario.divergenceYear;
       const validTypes: FinancialEvent['type'][] = ['income', 'expense', 'investment'];
@@ -233,6 +254,7 @@ const App: React.FC = () => {
       const newBranch: TimelineBranch = {
         id: newBranchId,
         parentId: parentId,
+        hierarchyCode,
         name: scenario.branchName,
         color: `hsl(${Math.random() * 360}, 75%, 65%)`,
         isOriginal: false,
@@ -248,7 +270,7 @@ const App: React.FC = () => {
       const aiMsg: ChatMessage = {
         id: Date.now().toString(),
         role: 'assistant',
-        content: `Temporal shift confirmed! We've branched from "${parentBranch.name}" at year ${divergenceYear}. ${scenario.explanation} Your new projected worth: ${formatCurrency(newWorth)}.`,
+        content: `Temporal shift confirmed! Created branch ${hierarchyCode} from branch ${parentBranch.hierarchyCode} at year ${divergenceYear}. ${scenario.explanation} Your new projected worth: ${formatCurrency(newWorth)}.`,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, aiMsg]);
@@ -273,7 +295,7 @@ const App: React.FC = () => {
       timestamp: new Date()
     }]);
 
-    const validationError = getTransactionValidationError(content);
+    const validationError = getTransactionValidationError(content, branches);
     if (validationError) {
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
@@ -284,7 +306,11 @@ const App: React.FC = () => {
       return;
     }
 
-    createBranch(content);
+    const targetBranchCode = parseBranchCodeFromPrompt(content);
+    const targetBranchId = targetBranchCode
+      ? branches.find(b => b.hierarchyCode === targetBranchCode)?.id
+      : selectedBranchId;
+    createBranch(content, undefined, targetBranchId);
   };
 
   const handleQuickBranch = (year: number, branchId: string) => {
@@ -348,7 +374,7 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-lg font-bold flex items-center gap-2">
                 <i className="fa-solid fa-list-check text-slate-400"></i>
-                Timeline Ledger: <span style={{ color: selectedBranch.color }}>{selectedBranch.name}</span>
+                Timeline Ledger: <span style={{ color: selectedBranch.color }}>Branch {selectedBranch.hierarchyCode} - {selectedBranch.name}</span>
               </h3>
               <span className="text-[10px] font-black bg-slate-800 px-3 py-1 rounded-full text-slate-400 uppercase tracking-widest border border-slate-700">
                 {selectedBranch.events.length} Data Points

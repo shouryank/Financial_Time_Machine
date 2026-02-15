@@ -178,7 +178,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
             onClick={() => onSelectBranch(b.id)}
           >
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: b.color }}></div>
-            {b.name}
+            {b.hierarchyCode} {b.name}
           </button>
         ))}
       </div>
