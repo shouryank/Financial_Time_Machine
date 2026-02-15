@@ -1,15 +1,17 @@
 
 import React from 'react';
-import { TimelineBranch } from '../types';
+import { MarketTrend, TimelineBranch } from '../types';
 import { formatCurrency } from '../services/financeUtils';
 import { CURRENT_YEAR } from '../constants';
 
 interface StatCardsProps {
   branch: TimelineBranch;
+  parentBranch: TimelineBranch | null;
   originalBranch: TimelineBranch;
 }
 
 type AssetLineItem = {
+  signature: string;
   label: string;
   purchaseAmount: number;
   currentValue: number;
@@ -18,37 +20,100 @@ type AssetLineItem = {
   trend: 'depreciate' | 'appreciate';
 };
 
+type MarketSource = 'crypto' | 'equity';
+
+// Approximate broad-market annual returns used for non-crypto financial assets.
+// This prevents crypto volatility from being incorrectly applied to savings/401k/stocks.
+const DEFAULT_EQUITY_RETURNS: Record<number, number> = {
+  2010: 0.15, 2011: 0.02, 2012: 0.16, 2013: 0.32, 2014: 0.14, 2015: 0.01,
+  2016: 0.12, 2017: 0.21, 2018: -0.04, 2019: 0.31, 2020: 0.18, 2021: 0.28,
+  2022: -0.18, 2023: 0.26, 2024: 0.15, 2025: 0.10
+};
+
 const getAssetProfile = (label: string, description: string, eventType: TimelineBranch['events'][number]['type']) => {
   const text = `${label} ${description}`.toLowerCase();
-  if (/car|vehicle|auto|suv|sedan|truck/.test(text)) return { type: 'Vehicle', annualRate: 0.15, trend: 'depreciate' as const };
-  if (/house|home|land|property|real estate|apartment|condo/.test(text)) return { type: 'Real Estate', annualRate: 0.04, trend: 'appreciate' as const };
-  if (/401k|retirement|ira|pension|stock|stocks|etf|mutual fund|index fund|shares|equity|crypto|bitcoin|btc|ethereum|eth/.test(text)) {
-    return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const };
+  if (/car|vehicle|auto|suv|sedan|truck/.test(text)) return { type: 'Vehicle', annualRate: 0.15, trend: 'depreciate' as const, valuation: 'fixed' as const, marketSource: null as MarketSource | null };
+  if (/house|home|land|property|real estate|apartment|condo/.test(text)) return { type: 'Real Estate', annualRate: 0.04, trend: 'appreciate' as const, valuation: 'fixed' as const, marketSource: null as MarketSource | null };
+  if (/crypto|bitcoin|btc|ethereum|eth/.test(text)) {
+    return { type: 'Financial Asset', annualRate: 0.20, trend: 'appreciate' as const, valuation: 'market' as const, marketSource: 'crypto' as MarketSource };
   }
-  if (eventType === 'investment') return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const };
-  if (/phone|laptop|electronics|computer/.test(text)) return { type: 'Electronics', annualRate: 0.25, trend: 'depreciate' as const };
-  if (/furniture|appliance/.test(text)) return { type: 'Household', annualRate: 0.12, trend: 'depreciate' as const };
+  if (/401k|retirement|ira|pension|stock|stocks|etf|mutual fund|index fund|shares|equity/.test(text)) {
+    return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const, valuation: 'market' as const, marketSource: 'equity' as MarketSource };
+  }
+  if (eventType === 'investment') return { type: 'Financial Asset', annualRate: 0.08, trend: 'appreciate' as const, valuation: 'market' as const, marketSource: 'equity' as MarketSource };
+  if (/phone|laptop|electronics|computer/.test(text)) return { type: 'Electronics', annualRate: 0.25, trend: 'depreciate' as const, valuation: 'fixed' as const, marketSource: null as MarketSource | null };
+  if (/furniture|appliance/.test(text)) return { type: 'Household', annualRate: 0.12, trend: 'depreciate' as const, valuation: 'fixed' as const, marketSource: null as MarketSource | null };
   return null;
 };
 
-const buildAssetItems = (events: TimelineBranch['events']): AssetLineItem[] => {
-  const isInvestmentIntentEvent = (event: TimelineBranch['events'][number]): boolean => {
+const isTrendRelevantForSource = (trend: MarketTrend, source: MarketSource): boolean => {
+  const text = (trend.narrative || '').toLowerCase();
+  if (source === 'crypto') {
+    return /crypto|bitcoin|btc|ethereum|eth|altcoin|blockchain/.test(text);
+  }
+  return /stock|equity|s&p|nasdaq|index|bond|interest rate|fed|treasury|retirement|401k|etf/.test(text);
+};
+
+const getMarketGrowthRateForYear = (
+  year: number,
+  trends: MarketTrend[],
+  fallbackRate: number,
+  marketSource: MarketSource
+): number => {
+  const trend = trends.find(t => t.year === year);
+  if (!trend || !Number.isFinite(trend.growthRate)) {
+    if (marketSource === 'equity') return DEFAULT_EQUITY_RETURNS[year] ?? fallbackRate;
+    return fallbackRate;
+  }
+  if (!isTrendRelevantForSource(trend, marketSource)) {
+    if (marketSource === 'equity') return DEFAULT_EQUITY_RETURNS[year] ?? fallbackRate;
+    return fallbackRate;
+  }
+
+  // Safety bounds to avoid pathological outputs from malformed trend values.
+  const bounded = Math.max(-0.95, Math.min(trend.growthRate, marketSource === 'crypto' ? 5 : 1));
+  return bounded;
+};
+
+const compoundWithMarketTrends = (
+  principal: number,
+  startYear: number,
+  trends: MarketTrend[],
+  fallbackRate: number,
+  marketSource: MarketSource
+): number => {
+  let value = principal;
+  for (let year = startYear + 1; year <= CURRENT_YEAR; year++) {
+    value *= (1 + getMarketGrowthRateForYear(year, trends, fallbackRate, marketSource));
+  }
+  return Math.max(0, Math.round(value));
+};
+
+const getEventSignature = (event: TimelineBranch['events'][number]): string => {
+  return `${event.year}|${event.type}|${event.amount}|${event.label.toLowerCase()}`;
+};
+
+const buildAssetItems = (events: TimelineBranch['events'], marketTrends: MarketTrend[]): AssetLineItem[] => {
+  const isAssetEvent = (event: TimelineBranch['events'][number]): boolean => {
     const description = (event.description || '').toLowerCase();
-    // Atlas imports embed category|intent|accountId in description.
-    // We treat only intent=investment records as asset contributors.
+    // Trust event classification from Gemini/DB mapping.
+    // DB imports include intent in description, so we keep that compatibility.
     return event.type === 'investment' || /\binvestment\b/.test(description);
   };
 
   return events
-    .filter(isInvestmentIntentEvent)
+    .filter(isAssetEvent)
     .map(e => {
       const profile = getAssetProfile(e.label, e.description, e.type);
       if (!profile) return null;
       const yearsHeld = Math.max(0, CURRENT_YEAR - e.year);
-      const currentValue = profile.trend === 'depreciate'
-        ? Math.max(0, Math.round(e.amount * Math.pow(1 - profile.annualRate, yearsHeld)))
-        : Math.max(0, Math.round(e.amount * Math.pow(1 + profile.annualRate, yearsHeld)));
+      const currentValue = profile.valuation === 'market'
+        ? compoundWithMarketTrends(e.amount, e.year, marketTrends, profile.annualRate, profile.marketSource || 'equity')
+        : profile.trend === 'depreciate'
+          ? Math.max(0, Math.round(e.amount * Math.pow(1 - profile.annualRate, yearsHeld)))
+          : Math.max(0, Math.round(e.amount * Math.pow(1 + profile.annualRate, yearsHeld)));
       return {
+        signature: getEventSignature(e),
         label: `${profile.type}: ${e.label} (${e.year})`,
         purchaseAmount: e.amount,
         currentValue,
@@ -60,13 +125,23 @@ const buildAssetItems = (events: TimelineBranch['events']): AssetLineItem[] => {
     .filter((item): item is AssetLineItem => Boolean(item));
 };
 
-const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
+const StatCards: React.FC<StatCardsProps> = ({ branch, parentBranch, originalBranch }) => {
   const sidePopupRightClass =
-    'absolute top-0 left-[calc(100%+12px)] w-[320px] max-h-[260px] opacity-0 invisible pointer-events-none group-hover:opacity-100 group-hover:visible group-hover:pointer-events-auto transition-all duration-150 bg-slate-950/95 border border-slate-700 rounded-xl p-4 text-xs z-[9999] overflow-y-auto shadow-2xl shadow-black/30';
+    'absolute top-0 left-[100%] w-[320px] max-h-[260px] opacity-0 invisible pointer-events-none group-hover:opacity-100 group-hover:visible group-hover:pointer-events-auto transition-all duration-150 bg-slate-950/95 border border-slate-700 rounded-xl p-4 text-xs z-[9999] overflow-y-auto shadow-2xl shadow-black/30';
   const sidePopupLeftClass =
-    'absolute top-0 right-[calc(100%+12px)] w-[320px] max-h-[260px] opacity-0 invisible pointer-events-none group-hover:opacity-100 group-hover:visible group-hover:pointer-events-auto transition-all duration-150 bg-slate-950/95 border border-slate-700 rounded-xl p-4 text-xs z-[9999] overflow-y-auto shadow-2xl shadow-black/30';
-  const branchAssetItems = buildAssetItems(branch.events);
-  const originalAssetItems = buildAssetItems(originalBranch.events);
+    'absolute top-0 right-[100%] w-[320px] max-h-[260px] opacity-0 invisible pointer-events-none group-hover:opacity-100 group-hover:visible group-hover:pointer-events-auto transition-all duration-150 bg-slate-950/95 border border-slate-700 rounded-xl p-4 text-xs z-[9999] overflow-y-auto shadow-2xl shadow-black/30';
+  const parentAssetItems = parentBranch ? buildAssetItems(parentBranch.events, parentBranch.marketTrends) : [];
+  const parentAssetValueBySignature = new Map<string, number>(
+    parentAssetItems.map(item => [item.signature, item.currentValue])
+  );
+
+  const branchAssetItems = buildAssetItems(branch.events, branch.marketTrends).map(item => {
+    const inheritedValue = parentAssetValueBySignature.get(item.signature);
+    if (inheritedValue === undefined) return item;
+    // Keep parent investment valuation unchanged for inherited assets.
+    return { ...item, currentValue: inheritedValue };
+  });
+  const originalAssetItems = buildAssetItems(originalBranch.events, originalBranch.marketTrends);
   const assetsTotal = branchAssetItems.reduce((sum, item) => sum + item.currentValue, 0);
   const originalAssetsTotal = originalAssetItems.reduce((sum, item) => sum + item.currentValue, 0);
   const totalNetWorth = branch.calculatedNetWorth + assetsTotal;
@@ -160,16 +235,16 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
         <div className="absolute top-0 right-0 p-3 opacity-10">
           <i className="fa-solid fa-car-side text-4xl"></i>
         </div>
-        <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Assets Value</p>
+        <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Non Liquid Assets</p>
         <h2 className="text-3xl font-bold font-heading text-white tracking-tight">
           {formatCurrency(assetsTotal)}
         </h2>
-        <p className="text-[10px] text-slate-500 mt-2 italic font-medium">From intent=investment entries</p>
+        <p className="text-[10px] text-slate-500 mt-2 italic font-medium">Tangible + investment assets (depreciation/appreciation)</p>
         <div className={sidePopupLeftClass}>
           <p className="text-slate-300 font-bold mb-1">Asset Line Items</p>
           <div className="space-y-1 pr-1">
             {branchAssetItems.length === 0 ? (
-              <p className="text-slate-500">No intent=investment asset entries found.</p>
+              <p className="text-slate-500">No asset entries found for this branch.</p>
             ) : (
               branchAssetItems.map((asset, idx) => (
                 <p key={idx} className="text-cyan-300">

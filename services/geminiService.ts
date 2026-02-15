@@ -21,6 +21,15 @@ Your Goal:
    - Generate a "Market Trend" map for the years between the divergence and ${CURRENT_YEAR}.
    - Use REAL historical data (e.g. Crypto boom 2017, Covid crash 2020).
    - If buying a specific asset (e.g. "Buy a Classic Car"), track the value of THAT asset type.
+   - IMPORTANT: keep trends asset-class specific.
+     - If query is about Bitcoin/crypto, trends should represent crypto behavior only.
+     - If query is about stocks/401k/index funds, trends should represent equity market behavior only.
+     - Do NOT use crypto swings to imply stock/401k growth rates.
+   - For financial assets (Bitcoin/crypto, stocks/ETF/index funds, 401k/retirement), the growthRate MUST be realistic year-by-year market performance.
+   - Include negative years where applicable (e.g. crypto crashes, bear markets) and do not smooth volatility.
+   - Use annual close-to-close style returns for each calendar year.
+   - Narratives should reference the major real-world driver for that year.
+   - Keep growthRate within realistic annual bounds for the chosen asset class.
 
 Context of original timeline (User is currently upper-middle class):
 - 2010: Junior Analyst job ($45k)
@@ -39,8 +48,12 @@ Context of original timeline (User is currently upper-middle class):
    - Always output explicit integer years. Never output relative phrases in year fields.
 
 6. **Intent Fidelity (MANDATORY):**
-   - If user says they "bought/purchased" a car/vehicle for X, include an expense event for that amount in the resolved year.
-   - Do not flip the sign or convert it into income/investment.
+   - Infer event type from the text itself:
+     - Use type = "investment" for purchases that create/retain asset value (bitcoin/crypto, stocks/ETF/index fund, 401k contributions, home purchase, car purchase).
+     - Use type = "expense" for rent and recurring/consumption costs (apartment rent, HOA fees, lease payments, maintenance fees, utilities, insurance, subscriptions, taxes).
+     - Use type = "income" for salary/payroll/bonus/credits.
+   - For rent/HOA/lease/fees, NEVER classify as investment.
+   - For financial asset buys, NEVER classify as expense.
 
 Return JSON matching the schema.
 For 'marketTrends', provide an entry for EVERY year from the divergenceYear to ${CURRENT_YEAR}.
@@ -95,9 +108,32 @@ export const generateScenario = async (prompt: string): Promise<SimulationScenar
 
   try {
     const data = JSON.parse(response.text || '{}');
-    return data as SimulationScenario;
+    if (!data || typeof data !== 'object') {
+      throw new Error('Model returned an empty or invalid scenario payload.');
+    }
+
+    const divergenceYear = Number((data as any).divergenceYear);
+    const branchName = typeof (data as any).branchName === 'string' ? (data as any).branchName : 'Alternate Timeline';
+    const explanation = typeof (data as any).explanation === 'string' ? (data as any).explanation : 'Scenario generated.';
+    const newEvents = Array.isArray((data as any).newEvents) ? (data as any).newEvents : [];
+    const marketTrends = Array.isArray((data as any).marketTrends) ? (data as any).marketTrends : [];
+
+    if (!Number.isFinite(divergenceYear)) {
+      throw new Error('Model did not return a valid divergence year.');
+    }
+    if (newEvents.length === 0) {
+      throw new Error('Model returned no new events for this request. Try rephrasing with explicit action, amount, and year.');
+    }
+
+    return {
+      divergenceYear,
+      newEvents,
+      marketTrends,
+      branchName,
+      explanation
+    } as SimulationScenario;
   } catch (e) {
     console.error("Failed to parse scenario", e);
-    throw new Error("Timeline distortion detected. Could not stabilize scenario.");
+    throw new Error(e instanceof Error ? e.message : "Timeline distortion detected. Could not stabilize scenario.");
   }
 };

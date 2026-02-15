@@ -11,9 +11,13 @@
   },
   "dependencies": {
     "@google/genai": "^1.41.0",
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.1.0",
+    "plaid": "^41.1.0",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "react-plaid-link": "^4.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

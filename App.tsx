@@ -79,25 +79,6 @@ const parseYearsAgoFromPrompt = (text: string): number | null => {
   return null;
 };
 
-const inferFallbackEventFromPrompt = (text: string, year: number): FinancialEvent | null => {
-  const lower = text.toLowerCase();
-  const amount = parseAmountFromPrompt(text);
-  if (!amount || amount <= 0) return null;
-
-  const buyIntent = /buy|bought|purchase|purchased|get/i.test(lower);
-  const isCar = /car|vehicle|auto|suv|sedan|truck/i.test(lower);
-  if (buyIntent && isCar) {
-    return {
-      year,
-      label: 'Car Purchase',
-      amount,
-      type: 'expense',
-      description: 'User-requested vehicle purchase.'
-    };
-  }
-  return null;
-};
-
 const extractAssetNameFromPrompt = (text: string): string | null => {
   const lower = text.toLowerCase();
   const assetRegexes = [
@@ -122,6 +103,11 @@ const parseBranchCodeFromPrompt = (text: string): string | null => {
 
 const hasKeyword = (value: string | undefined, keyword: string): boolean => {
   return (value || '').toLowerCase().includes(keyword);
+};
+
+const isFinancialAssetText = (label: string | undefined, description: string | undefined): boolean => {
+  const text = `${label || ''} ${description || ''}`.toLowerCase();
+  return /crypto|bitcoin|btc|ethereum|eth|stock|stocks|etf|index fund|mutual fund|equity|401k|retirement|ira|pension/.test(text);
 };
 
 const getTransactionValidationError = (text: string, branches: TimelineBranch[]): string | null => {
@@ -520,22 +506,20 @@ const App: React.FC = () => {
       
       const divergenceYear = overrideYear || inferredYear || scenario.divergenceYear;
       const validTypes: FinancialEvent['type'][] = ['income', 'expense', 'investment'];
-      const aiDivergenceEvents = scenario.newEvents
+      const safeScenarioEvents = Array.isArray(scenario.newEvents) ? scenario.newEvents : [];
+      const safeScenarioMarketTrends = Array.isArray(scenario.marketTrends) ? scenario.marketTrends : [];
+      const aiDivergenceEvents = safeScenarioEvents
         .filter(e => validTypes.includes(e.type as FinancialEvent['type']))
         .filter(e => e.year >= START_YEAR && e.year <= CURRENT_YEAR)
         .filter(e => e.year === divergenceYear)
         .map(e => ({
           ...e,
-          type: e.type as FinancialEvent['type'],
+          type: ((e.type as FinancialEvent['type']) === 'expense' && isFinancialAssetText(e.label, e.description))
+            ? 'investment'
+            : (e.type as FinancialEvent['type']),
           amount: Math.abs(Number.isFinite(e.amount) ? e.amount : 0)
         }));
-      const fallbackEvent = inferFallbackEventFromPrompt(content, divergenceYear);
-      const hasEquivalentExpense = fallbackEvent
-        ? aiDivergenceEvents.some(e => e.type === 'expense' && e.amount === fallbackEvent.amount)
-        : false;
-      const sanitizedNewEvents = fallbackEvent && !hasEquivalentExpense
-        ? [...aiDivergenceEvents, fallbackEvent]
-        : aiDivergenceEvents;
+      const sanitizedNewEvents = aiDivergenceEvents;
 
       // Preserve parent timeline and only replace what AI explicitly changes (same year+type).
       const historicalEvents = parentBranch.events.filter(e => e.year < divergenceYear);
@@ -587,7 +571,7 @@ const App: React.FC = () => {
         color: `hsl(${Math.random() * 360}, 75%, 65%)`,
         isOriginal: false,
         events: combinedEvents,
-        marketTrends: scenario.marketTrends,
+        marketTrends: safeScenarioMarketTrends,
         calculatedNetWorth: newWorth,
         divergenceYear: divergenceYear
       };
@@ -604,10 +588,11 @@ const App: React.FC = () => {
       setMessages(prev => [...prev, aiMsg]);
     } catch (error) {
       console.error(error);
+      const detail = error instanceof Error ? error.message : 'Unknown model error.';
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
-        content: "Timeline destabilization occurred. The paradox was too great to compute.",
+        content: `Timeline destabilization occurred. ${detail}`,
         timestamp: new Date()
       }]);
     } finally {
@@ -800,6 +785,7 @@ const App: React.FC = () => {
           
           <StatCards 
             branch={selectedBranch} 
+            parentBranch={branches.find(b => b.id === selectedBranch.parentId) || null}
             originalBranch={originalBranch} 
           />
 
