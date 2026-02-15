@@ -74,6 +74,20 @@
     ::-webkit-scrollbar-thumb {
       border-radius: 10px;
     }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 5px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    [data-theme="dark"] .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 10px;
+    }
+    [data-theme="light"] .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 10px;
+    }
   </style>
 </head>
 <body class="animated-bg">

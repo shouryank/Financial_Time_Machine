@@ -54,9 +54,53 @@ D) **One-time expense / payment (no asset acquired)**: e.g. "What if I had $10k 
    - If the user mentions ongoing costs (e.g. "medical bills every month"), treat the monthly portion as monthlyImpact and the initial cost as totalImpact.
    - branchName should describe the expense, e.g. "$10K Medical Bills", "$5K Charity Donation".
 
+Supported investment assets (use REAL historical monthly close prices for these):
+
+**Top 20 Stocks:**
+| Ticker | Company               | Approx Feb 2026 Price |
+|--------|----------------------|----------------------|
+| NVDA   | NVIDIA               | ~$135                |
+| AAPL   | Apple                | ~$235                |
+| MSFT   | Microsoft            | ~$410                |
+| AMZN   | Amazon               | ~$225                |
+| GOOGL  | Alphabet (Google)    | ~$185                |
+| META   | Meta Platforms       | ~$690                |
+| TSLA   | Tesla                | ~$355                |
+| TSM    | Taiwan Semiconductor | ~$205                |
+| AVGO   | Broadcom             | ~$225                |
+| JPM    | JPMorgan Chase       | ~$270                |
+| V      | Visa                 | ~$340                |
+| WMT    | Walmart              | ~$105                |
+| MA     | Mastercard           | ~$535                |
+| NFLX   | Netflix              | ~$1010               |
+| COST   | Costco               | ~$1050               |
+| AMD    | AMD                  | ~$115                |
+| DIS    | Walt Disney          | ~$110                |
+| SPY    | S&P 500 ETF          | ~$605                |
+| QQQ    | Nasdaq 100 ETF       | ~$530                |
+| VOO    | Vanguard S&P 500 ETF | ~$555                |
+
+**Top 10 Cryptocurrencies:**
+| Symbol | Name           | Approx Feb 2026 Price |
+|--------|---------------|----------------------|
+| BTC    | Bitcoin       | ~$97,000             |
+| ETH    | Ethereum      | ~$2,700              |
+| SOL    | Solana        | ~$200                |
+| BNB    | BNB           | ~$660                |
+| XRP    | Ripple        | ~$2.65               |
+| ADA    | Cardano       | ~$0.75               |
+| DOGE   | Dogecoin      | ~$0.26               |
+| DOT    | Polkadot      | ~$5.10               |
+| AVAX   | Avalanche     | ~$26                 |
+| MATIC  | Polygon       | ~$0.30               |
+
+Use these approximate current prices along with your knowledge of REAL historical prices
+for calculating investment returns. For any date, use the actual historical close price
+(or your best estimate) for that asset at that month.
+
 Rules:
 - divergenceMonth MUST be a "YYYY-MM" string.
-- Use REAL historical prices for investments (NVIDIA, Bitcoin, Tesla, S&P500, etc.)
+- Use REAL historical prices for ALL supported stocks and cryptos listed above.
 - Be accurate with stock/crypto prices. Use close-to-close monthly prices.
 - Be realistic with depreciation rates and ongoing costs.
 - branchName should be short and descriptive, e.g. "No Coffee Since 2020", "NVIDIA Investor", "$100k Car Owner".

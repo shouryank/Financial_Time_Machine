@@ -6,8 +6,10 @@ import TimelineGraph from './components/TimelineGraph';
 import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
 import ProfilePage from './components/ProfilePage';
+import TransactionsPage from './components/TransactionsPage';
 import LokiLogo from './components/LokiLogo';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
+import { usePlaidLink } from 'react-plaid-link';
 import { generateScenario } from './services/geminiService';
 import { formatCurrency, buildCumulativeBalance, applyWhatIfDelta } from './services/financeUtils';
 
@@ -112,9 +114,77 @@ const buildSpendingSummary = (events: FinancialEvent[]): string => {
   return lines.join('\n');
 };
 
+// ── Plaid Link Button ──
+type PlaidLinkButtonProps = {
+  linkToken: string | null;
+  connected: boolean;
+  loading: boolean;
+  isDark: boolean;
+  onRequestToken: () => void;
+  onSuccess: (publicToken: string) => void;
+  onDisconnect: () => void;
+};
+
+const PlaidLinkButton: React.FC<PlaidLinkButtonProps> = ({ linkToken, connected, loading, isDark, onRequestToken, onSuccess, onDisconnect }) => {
+  const { open, ready } = usePlaidLink({
+    token: linkToken ?? '',
+    onSuccess: (publicToken: string) => onSuccess(publicToken),
+    onExit: () => {},
+  });
+
+  // Auto-fetch link token on mount so "Link Now" is the default view
+  useEffect(() => {
+    if (!connected && !linkToken && !loading) onRequestToken();
+  }, [connected, linkToken, loading]);
+
+  // When connected → show green "Connected" with disconnect option
+  if (connected) {
+    return (
+      <button
+        onClick={onDisconnect}
+        disabled={loading}
+        title="Bank connected via Plaid Sandbox — click to disconnect"
+        className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-emerald-500/40 hover:bg-white/10' : 'bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 shadow-sm'}`}
+      >
+        <i className={`fa-solid fa-link text-emerald-400 text-sm`}></i>
+        <span className={`text-[9px] font-bold uppercase tracking-widest ml-1.5 hidden md:inline text-emerald-400`}>Connected</span>
+      </button>
+    );
+  }
+
+  // When link token is ready → open Plaid Link
+  if (linkToken && ready) {
+    return (
+      <button
+        onClick={() => open()}
+        disabled={loading}
+        title="Open Plaid Link to connect a sandbox bank account"
+        className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-green-500/50 hover:bg-white/10' : 'bg-green-50 border border-green-300 hover:bg-green-100 shadow-sm'}`}
+      >
+        <i className={`fa-solid fa-building-columns text-green-400 text-sm`}></i>
+        <span className={`text-[9px] font-bold uppercase tracking-widest ml-1.5 hidden md:inline text-green-400`}>Link Now</span>
+      </button>
+    );
+  }
+
+  // Loading state while fetching link token
+  return (
+    <button
+      disabled
+      title="Loading Plaid Link..."
+      className={`px-3 py-2 rounded-2xl transition-all group opacity-50 ${isDark ? 'glass border-slate-700/50' : 'bg-white border border-slate-200 shadow-sm'}`}
+    >
+      <i className={`fa-solid fa-building-columns text-sm animate-spin ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
+      <span className={`text-[9px] font-bold uppercase tracking-widest ml-1.5 hidden md:inline ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Loading...</span>
+    </button>
+  );
+};
+
 const AppInner: React.FC = () => {
   const { isDark, toggleTheme } = useTheme();
   const [showProfile, setShowProfile] = useState(false);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'transactions'>('dashboard');
+  const [assetCategory, setAssetCategory] = useState<'stocks' | 'crypto'>('stocks');
   const [branches, setBranches] = useState<TimelineBranch[]>([MOCK_ORIGINAL_BRANCH]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(MOCK_ORIGINAL_BRANCH.id);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
@@ -128,6 +198,9 @@ const AppInner: React.FC = () => {
   const [isLoadingAtlas, setIsLoadingAtlas] = useState(true);
   const [atlasLoadError, setAtlasLoadError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
+  const [plaidConnected, setPlaidConnected] = useState(false);
+  const [plaidLoading, setPlaidLoading] = useState(false);
   const makeWelcomeMessage = (): ChatMessage[] => [{
     id: '1',
     role: 'assistant',
@@ -163,6 +236,18 @@ const AppInner: React.FC = () => {
     bootstrapSession();
     return () => { alive = false; };
   }, []);
+
+  // Check Plaid connection status when user session is available
+  useEffect(() => {
+    if (!sessionUser) return;
+    (async () => {
+      try {
+        const resp = await fetch('/api/plaid/status');
+        const data = await resp.json();
+        setPlaidConnected(Boolean(data?.connected));
+      } catch { /* ignore */ }
+    })();
+  }, [sessionUser]);
 
   const handleAuthSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -564,7 +649,7 @@ User Request: ${content}`;
     <div className={`min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6 transition-colors duration-300 ${isDark ? '' : 'bg-slate-50'}`}>
       {/* Header */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-        <div className="relative flex items-center gap-4">
+        <div className="relative flex items-center gap-4 cursor-pointer" onClick={() => { setActiveTab('dashboard'); setShowProfile(false); }}>
           <LokiLogo size={48} />
           <div>
             <div className="absolute -left-4 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-500 via-purple-500 to-transparent rounded-full hidden md:block"></div>
@@ -580,15 +665,6 @@ User Request: ${content}`;
         </div>
         
         <div className="flex gap-2 items-center">
-          {/* Theme toggle */}
-          <button
-            onClick={toggleTheme}
-            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
-          >
-            <i className={`fa-solid ${isDark ? 'fa-sun text-amber-400 group-hover:text-amber-300' : 'fa-moon text-blue-500 group-hover:text-blue-600'} transition-colors text-sm`}></i>
-          </button>
-
           {/* Refresh — clear all branches */}
           <button
             onClick={resetBranches}
@@ -597,6 +673,7 @@ User Request: ${content}`;
             className={`px-3 py-2 rounded-2xl transition-all group disabled:opacity-30 disabled:cursor-not-allowed ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
             <i className={`fa-solid fa-arrows-rotate group-hover:text-blue-400 transition-colors text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
+            <span className={`text-[9px] font-bold group-hover:text-blue-300 uppercase tracking-widest ml-1.5 hidden md:inline ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Refresh</span>
           </button>
 
           {/* Prune — delete selected branch + children */}
@@ -610,21 +687,57 @@ User Request: ${content}`;
             <span className={`text-[9px] font-bold group-hover:text-amber-300 uppercase tracking-widest ml-1.5 hidden md:inline ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Prune</span>
           </button>
 
-          {/* Profile button */}
+          {/* Plaid Sandbox — Connect Bank */}
+          <PlaidLinkButton
+            linkToken={plaidLinkToken}
+            connected={plaidConnected}
+            loading={plaidLoading}
+            isDark={isDark}
+            onRequestToken={async () => {
+              setPlaidLoading(true);
+              try {
+                const resp = await fetch('/api/plaid/create_link_token', { method: 'POST' });
+                const data = await resp.json();
+                if (data.link_token) setPlaidLinkToken(data.link_token);
+              } catch (e) { console.error('Failed to get link token', e); }
+              finally { setPlaidLoading(false); }
+            }}
+            onSuccess={async (publicToken: string) => {
+              setPlaidLoading(true);
+              try {
+                await fetch('/api/plaid/exchange_public_token', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ public_token: publicToken })
+                });
+                setPlaidConnected(true);
+                setPlaidLinkToken(null);
+              } catch (e) { console.error('Token exchange failed', e); }
+              finally { setPlaidLoading(false); }
+            }}
+            onDisconnect={async () => {
+              setPlaidLoading(true);
+              try {
+                await fetch('/api/plaid/disconnect', { method: 'POST' });
+                setPlaidConnected(false);
+              } catch (e) { console.error('Disconnect failed', e); }
+              finally { setPlaidLoading(false); }
+            }}
+          />
+
+          {/* Profile + Email — combined button */}
           <button
             onClick={() => setShowProfile(true)}
             title="Edit Profile"
-            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+            className={`px-3 py-2 rounded-2xl flex items-center gap-3 transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10 shadow-xl shadow-blue-500/5' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
               <span className="text-[10px] font-bold text-white">{sessionUser.email.charAt(0).toUpperCase()}</span>
             </div>
+            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+            <span className={`text-[10px] font-bold tracking-wide ${isDark ? 'text-slate-300 group-hover:text-white' : 'text-slate-600 group-hover:text-slate-800'}`}>{sessionUser.email}</span>
           </button>
 
-          <div className={`px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl ${isDark ? 'glass border-slate-700/50 shadow-blue-500/5' : 'bg-white border border-slate-200 shadow-sm'}`}>
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className={`text-[10px] font-bold uppercase tracking-widest ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sessionUser.email}</span>
-          </div>
           <button
             onClick={handleLogout}
             title="Logout"
@@ -647,7 +760,44 @@ User Request: ${content}`;
         </div>
       )}
 
+      {/* Tab Navigation */}
+      <nav className={`flex gap-1 p-1 rounded-2xl border w-fit ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-sm'}`}>
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+            activeTab === 'dashboard'
+              ? isDark
+                ? 'bg-gradient-to-r from-blue-600/30 to-purple-600/20 text-white border border-blue-500/40 shadow-lg shadow-blue-500/10'
+                : 'bg-gradient-to-r from-blue-50 to-purple-50 text-blue-700 border border-blue-300 shadow-sm'
+              : isDark
+                ? 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          <i className="fa-solid fa-gauge-high text-xs"></i>
+          Dashboard
+        </button>
+        <button
+          onClick={() => setActiveTab('transactions')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+            activeTab === 'transactions'
+              ? isDark
+                ? 'bg-gradient-to-r from-blue-600/30 to-purple-600/20 text-white border border-blue-500/40 shadow-lg shadow-blue-500/10'
+                : 'bg-gradient-to-r from-blue-50 to-purple-50 text-blue-700 border border-blue-300 shadow-sm'
+              : isDark
+                ? 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+                : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          <i className="fa-solid fa-receipt text-xs"></i>
+          Transactions
+        </button>
+      </nav>
+
       {/* Main Content Grid */}
+      {activeTab === 'transactions' ? (
+        <TransactionsPage events={originalBranch.events} />
+      ) : (
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Visuals and Stats */}
         <div className="lg:col-span-8 space-y-6">
@@ -747,7 +897,135 @@ User Request: ${content}`;
               ))}
             </div>
           </div>
+
+          {/* Supported Assets Panel */}
+          <div className={`mt-4 p-5 rounded-2xl border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
+            {/* Header + dropdown toggle */}
+            <div className="flex items-center justify-between mb-3">
+              <h4 className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
+                <i className="fa-solid fa-chart-line"></i>
+                Supported Assets
+              </h4>
+              <div className={`flex gap-0.5 p-0.5 rounded-lg border ${isDark ? 'bg-slate-900/60 border-slate-700/50' : 'bg-slate-100 border-slate-200'}`}>
+                <button
+                  onClick={() => setAssetCategory('stocks')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all ${
+                    assetCategory === 'stocks'
+                      ? isDark
+                        ? 'bg-blue-600/20 text-blue-300 shadow-sm shadow-blue-500/10'
+                        : 'bg-white text-blue-700 shadow-sm'
+                      : isDark
+                        ? 'text-slate-500 hover:text-slate-300'
+                        : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  <i className="fa-solid fa-building-columns text-[8px]"></i>
+                  Stocks <span className={`text-[8px] ${assetCategory === 'stocks' ? '' : 'opacity-50'}`}>20</span>
+                </button>
+                <button
+                  onClick={() => setAssetCategory('crypto')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10px] font-bold transition-all ${
+                    assetCategory === 'crypto'
+                      ? isDark
+                        ? 'bg-amber-600/20 text-amber-300 shadow-sm shadow-amber-500/10'
+                        : 'bg-white text-amber-700 shadow-sm'
+                      : isDark
+                        ? 'text-slate-500 hover:text-slate-300'
+                        : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  <i className="fa-brands fa-bitcoin text-[8px]"></i>
+                  Crypto <span className={`text-[8px] ${assetCategory === 'crypto' ? '' : 'opacity-50'}`}>10</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Asset list */}
+            <div className="max-h-[220px] overflow-y-auto pr-1 custom-scrollbar space-y-1">
+              {assetCategory === 'stocks' ? [
+                { ticker: 'NVDA', name: 'NVIDIA', price: '$135', trend: '+2,600% (5y)' },
+                { ticker: 'AAPL', name: 'Apple', price: '$235', trend: '+280% (5y)' },
+                { ticker: 'MSFT', name: 'Microsoft', price: '$410', trend: '+230% (5y)' },
+                { ticker: 'AMZN', name: 'Amazon', price: '$225', trend: '+120% (5y)' },
+                { ticker: 'GOOGL', name: 'Alphabet', price: '$185', trend: '+180% (5y)' },
+                { ticker: 'META', name: 'Meta', price: '$690', trend: '+220% (5y)' },
+                { ticker: 'TSLA', name: 'Tesla', price: '$355', trend: '+1,100% (5y)' },
+                { ticker: 'TSM', name: 'Taiwan Semi', price: '$205', trend: '+240% (5y)' },
+                { ticker: 'AVGO', name: 'Broadcom', price: '$225', trend: '+460% (5y)' },
+                { ticker: 'JPM', name: 'JPMorgan', price: '$270', trend: '+130% (5y)' },
+                { ticker: 'V', name: 'Visa', price: '$340', trend: '+80% (5y)' },
+                { ticker: 'WMT', name: 'Walmart', price: '$105', trend: '+120% (5y)' },
+                { ticker: 'MA', name: 'Mastercard', price: '$535', trend: '+90% (5y)' },
+                { ticker: 'NFLX', name: 'Netflix', price: '$1,010', trend: '+340% (5y)' },
+                { ticker: 'COST', name: 'Costco', price: '$1,050', trend: '+220% (5y)' },
+                { ticker: 'AMD', name: 'AMD', price: '$115', trend: '+400% (5y)' },
+                { ticker: 'DIS', name: 'Disney', price: '$110', trend: '-20% (5y)' },
+                { ticker: 'SPY', name: 'S&P 500 ETF', price: '$605', trend: '+85% (5y)' },
+                { ticker: 'QQQ', name: 'Nasdaq 100 ETF', price: '$530', trend: '+130% (5y)' },
+                { ticker: 'VOO', name: 'Vanguard S&P 500', price: '$555', trend: '+85% (5y)' },
+              ].map((s, i) => (
+                <button
+                  key={i}
+                  onClick={() => handleSendMessage(`What if I invested $5000 in ${s.ticker} in Jan 2020?`)}
+                  disabled={isProcessing}
+                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border transition-all text-[10px] group ${
+                    isDark
+                      ? 'bg-slate-900/30 border-slate-800/50 hover:border-blue-500/40 hover:bg-slate-800/50 text-slate-400'
+                      : 'bg-slate-50/50 border-slate-100 hover:border-blue-300 hover:bg-blue-50/50 text-slate-500'
+                  }`}
+                >
+                  <span className={`font-mono font-bold min-w-[40px] text-left ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>{s.ticker}</span>
+                  <span className="flex-1 text-left truncate">{s.name}</span>
+                  <span className={`font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{s.price}</span>
+                  <span className={`font-mono text-[9px] min-w-[80px] text-right ${s.trend.startsWith('-') ? 'text-rose-400' : 'text-emerald-400'}`}>{s.trend}</span>
+                </button>
+              )) : [
+                { ticker: 'BTC', name: 'Bitcoin', price: '$97,000', trend: '+870% (5y)' },
+                { ticker: 'ETH', name: 'Ethereum', price: '$2,700', trend: '+1,500% (5y)' },
+                { ticker: 'SOL', name: 'Solana', price: '$200', trend: '+12,000% (5y)' },
+                { ticker: 'BNB', name: 'BNB', price: '$660', trend: '+2,800% (5y)' },
+                { ticker: 'XRP', name: 'Ripple', price: '$2.65', trend: '+730% (5y)' },
+                { ticker: 'ADA', name: 'Cardano', price: '$0.75', trend: '+700% (5y)' },
+                { ticker: 'DOGE', name: 'Dogecoin', price: '$0.26', trend: '+8,500% (5y)' },
+                { ticker: 'DOT', name: 'Polkadot', price: '$5.10', trend: '+20% (3y)' },
+                { ticker: 'AVAX', name: 'Avalanche', price: '$26', trend: '+340% (4y)' },
+                { ticker: 'MATIC', name: 'Polygon', price: '$0.30', trend: '-60% (3y)' },
+              ].map((s, i) => (
+                <button
+                  key={`crypto-${i}`}
+                  onClick={() => handleSendMessage(`What if I invested $5000 in ${s.name} in Jan 2020?`)}
+                  disabled={isProcessing}
+                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border transition-all text-[10px] group ${
+                    isDark
+                      ? 'bg-slate-900/30 border-slate-800/50 hover:border-amber-500/40 hover:bg-slate-800/50 text-slate-400'
+                      : 'bg-slate-50/50 border-slate-100 hover:border-amber-300 hover:bg-amber-50/50 text-slate-500'
+                  }`}
+                >
+                  <span className={`font-mono font-bold min-w-[40px] text-left ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>{s.ticker}</span>
+                  <span className="flex-1 text-left truncate">{s.name}</span>
+                  <span className={`font-mono ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{s.price}</span>
+                  <span className={`font-mono text-[9px] min-w-[80px] text-right ${s.trend.startsWith('-') ? 'text-rose-400' : 'text-emerald-400'}`}>{s.trend}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
+      </div>
+      )}
+
+      {/* Sticky floating theme toggle — bottom right */}
+      <div className="fixed bottom-6 right-6 z-50">
+        <button
+          onClick={toggleTheme}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className={`w-12 h-12 rounded-full flex items-center justify-center shadow-2xl transition-all group ${
+            isDark
+              ? 'bg-slate-800 border border-slate-600 hover:bg-slate-700 hover:border-slate-500 shadow-black/40'
+              : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-slate-300/60'
+          }`}
+        >
+          <i className={`fa-solid ${isDark ? 'fa-sun text-amber-400 group-hover:text-amber-300' : 'fa-moon text-blue-500 group-hover:text-blue-600'} transition-colors text-lg`}></i>
+        </button>
       </div>
 
       {/* Footer */}
