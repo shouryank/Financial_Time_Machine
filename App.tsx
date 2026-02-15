@@ -16,13 +16,36 @@ const parseAmountFromPrompt = (text: string): number | null => {
       const base = parseFloat(match[1]);
       if (!Number.isFinite(base)) return null;
       const suffix = (match[2] || '').toLowerCase();
-      if (suffix === 'k') return Math.round(base * 1_000);
-      if (suffix === 'm') return Math.round(base * 1_000_000);
-      return Math.round(base);
+      const raw = Math.round(base);
+      const value = suffix === 'k'
+        ? Math.round(base * 1_000)
+        : suffix === 'm'
+          ? Math.round(base * 1_000_000)
+          : raw;
+      const start = Math.max(0, (match.index || 0) - 18);
+      const end = Math.min(text.length, (match.index || 0) + match[0].length + 18);
+      const context = text.slice(start, end).toLowerCase();
+      const hasCurrencyToken = match[0].includes('$') || suffix === 'k' || suffix === 'm';
+      const hasMoneyWord = /\b(worth|for|invest|investing|amount|cost|price|priced|value|spend|spent)\b/.test(context);
+      const hasMoneySignal = hasCurrencyToken || hasMoneyWord;
+      const looksLikeYear = value >= 1900 && value <= CURRENT_YEAR + 1 && suffix === '' && !hasMoneySignal;
+      if (looksLikeYear) return null;
+      if (value <= 0) return null;
+      return value;
     })
     .filter((value): value is number => value !== null);
   if (amounts.length === 0) return null;
   return Math.max(...amounts);
+};
+
+const parseAbsoluteYearFromPrompt = (text: string): number | null => {
+  const matches = [...text.matchAll(/\b(19\d{2}|20\d{2})\b/g)];
+  if (matches.length === 0) return null;
+  const years = matches
+    .map(m => Number(m[1]))
+    .filter(y => Number.isFinite(y) && y >= START_YEAR && y <= CURRENT_YEAR);
+  if (years.length === 0) return null;
+  return Math.max(...years);
 };
 
 const parseYearsAgoFromPrompt = (text: string): number | null => {
@@ -72,6 +95,40 @@ const inferFallbackEventFromPrompt = (text: string, year: number): FinancialEven
     };
   }
   return null;
+};
+
+const extractAssetNameFromPrompt = (text: string): string | null => {
+  const lower = text.toLowerCase();
+  const assetRegexes = [
+    /\b(car|vehicle|auto|suv|sedan|truck)\b/,
+    /\b(bitcoin|btc|crypto|ethereum|eth)\b/,
+    /\b(stock|stocks|etf|index fund|mutual fund|bond|bonds)\b/,
+    /\b(gold|silver|real estate|property|house|apartment)\b/,
+    /\b(laptop|phone|furniture|appliance)\b/
+  ];
+  for (const re of assetRegexes) {
+    const match = lower.match(re);
+    if (match) return match[1];
+  }
+  return null;
+};
+
+const getTransactionValidationError = (text: string): string | null => {
+  const lower = text.toLowerCase();
+  const isTransactionIntent = /\b(buy|bought|purchase|purchased|invest|invested|put|allocate|acquire|get)\b/.test(lower);
+  if (!isTransactionIntent) return null;
+
+  const hasYear = parseYearsAgoFromPrompt(text) !== null || parseAbsoluteYearFromPrompt(text) !== null;
+  const hasAmount = parseAmountFromPrompt(text) !== null;
+  const hasAsset = extractAssetNameFromPrompt(text) !== null;
+
+  const missing: string[] = [];
+  if (!hasYear) missing.push('year');
+  if (!hasAsset) missing.push('asset name');
+  if (!hasAmount) missing.push('amount');
+  if (missing.length === 0) return null;
+
+  return `I need ${missing.join(', ')} to run this simulation. Please include all three: year, asset name, and amount. Example: "Buy a car for $20k 3 years ago."`;
 };
 
 const App: React.FC = () => {
@@ -215,6 +272,18 @@ const App: React.FC = () => {
       content,
       timestamp: new Date()
     }]);
+
+    const validationError = getTransactionValidationError(content);
+    if (validationError) {
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: validationError,
+        timestamp: new Date()
+      }]);
+      return;
+    }
+
     createBranch(content);
   };
 
