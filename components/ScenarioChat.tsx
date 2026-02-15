@@ -71,7 +71,7 @@ const ScenarioChat: React.FC<ScenarioChatProps> = ({ messages, onSendMessage, is
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Go back to 2013 and buy Bitcoin..."
+            placeholder="What if I stopped buying coffee in 2020?"
             className="w-full bg-slate-950 border border-slate-700 rounded-xl py-3 px-4 pr-12 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all text-sm placeholder:text-slate-600"
           />
           <button 

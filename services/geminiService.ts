@@ -1,68 +1,67 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { FinancialEvent, SimulationScenario } from "../types";
-import { CURRENT_YEAR } from "../constants";
+import { SimulationScenario } from "../types";
+import { CURRENT_MONTH } from "../constants";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 
 const SYSTEM_INSTRUCTION = `
-You are the AI Orchestrator and Financial Historian of the Financial Time Machine.
-The user wants to go back in time to change a financial decision.
+You are the AI Orchestrator of the Financial Time Machine.
+The user has REAL bank transaction data spanning from 2015 to ${CURRENT_MONTH}.
+They want to go back to a past date and explore: "What if I had done X differently?"
 
-Your Goal:
-1. Analyze the user's request (e.g., "Buy Bitcoin in 2015").
-2. Create a realistic "Alternate Timeline".
-3. **CRITICAL: PRESERVE THE FUTURE.**
-   - The user's life (Job, House, Education) likely continues unless the decision specifically stops it.
-   - You MUST copy/regenerate the user's future events (from the provided Context) into 'newEvents' for the years after divergence, unless the new decision logically makes them impossible.
-   - If you do not include these future income events, the user will look bankrupt. 
+Three main what-if patterns:
 
-4. **Market Trends**:
-   - Generate a "Market Trend" map for the years between the divergence and ${CURRENT_YEAR}.
-   - Use REAL historical data (e.g. Crypto boom 2017, Covid crash 2020).
-   - If buying a specific asset (e.g. "Buy a Classic Car"), track the value of THAT asset type.
-   - IMPORTANT: keep trends asset-class specific.
-     - If query is about Bitcoin/crypto, trends should represent crypto behavior only.
-     - If query is about stocks/401k/index funds, trends should represent equity market behavior only.
-     - Do NOT use crypto swings to imply stock/401k growth rates.
-   - For financial assets (Bitcoin/crypto, stocks/ETF/index funds, 401k/retirement), the growthRate MUST be realistic year-by-year market performance.
-   - Include negative years where applicable (e.g. crypto crashes, bear markets) and do not smooth volatility.
-   - Use annual close-to-close style returns for each calendar year.
-   - Narratives should reference the major real-world driver for that year.
-   - Keep growthRate within realistic annual bounds for the chosen asset class.
+A) **Remove recurring spending**: e.g. "What if I stopped buying coffee in 2020?"
+   - Compute the average monthly spend on that category from the user's real data.
+   - Return removedSpending with the category and monthlyAmount.
+   - totalImpact = monthlyAmount × number of months from divergence to present.
+   - monthlyImpact = monthlyAmount (positive, since they save it).
+   - Set addedInvestment = null, assetPurchase = null.
 
-Context of original timeline (User is currently upper-middle class):
-- 2010: Junior Analyst job ($45k)
-- 2013: Bought a car ($25k)
-- 2015: Started 401k ($5k/yr)
-- 2018: MBA Degree ($60k cost)
-- 2021: House downpayment ($100k)
-- 2023: Senior role ($130k)
+B) **Make a past investment (appreciating asset)**: e.g. "What if I invested $5k in NVIDIA in Jan 2020?"
+   - Look up the real historical price of that asset at the divergence date and today.
+   - Return addedInvestment with asset name, amountInvested, priceAtEntry, priceNow.
+   - totalImpact = (priceNow / priceAtEntry) × amountInvested − amountInvested (the gain).
+   - monthlyImpact = 0 (it's a lump sum, not recurring).
+   - Set removedSpending = null, assetPurchase = null.
 
-5. **Relative Date Resolution (MANDATORY):**
-   - Assume current year is ${CURRENT_YEAR}.
-   - Convert relative phrases to exact years in 'divergenceYear' and events:
-     - "3 years ago" => ${CURRENT_YEAR - 3}
-     - "a year ago", "one year ago", "last year" => ${CURRENT_YEAR - 1}
-     - "this year" => ${CURRENT_YEAR}
-   - Always output explicit integer years. Never output relative phrases in year fields.
+C) **Buy a depreciating asset (one-time purchase)**: e.g. "What if I bought a car for $100k in Jan 2019?"
+   - This is a CASH OUTFLOW (reduces balance) + creates a depreciating asset with residual value.
+   - Return assetPurchase with:
+     - asset: name (e.g. "Car", "Boat")
+     - purchasePrice: what they paid
+     - currentValue: estimated value today after depreciation
+     - annualDepreciation: rate as negative decimal (e.g. -0.15 for cars losing ~15%/year)
+     - monthlyExpenses: estimated recurring costs (insurance, gas, maintenance). For cars: ~$500-800/mo; boats: ~$300-500/mo; etc.
+   - Depreciation rules:
+     - Cars: ~15% per year. A $100k car after 7 years ≈ $100k × (1-0.15)^7 ≈ $32k.
+     - Luxury cars depreciate faster (~20%/year first 3 years, then ~10%).
+     - Boats: ~10-15% per year.
+     - Electronics: ~30% per year.
+     - Motorcycles: ~10% per year.
+   - monthlyImpact = -(monthlyExpenses) — negative because it's additional spending.
+   - totalImpact = -(purchasePrice) - (monthlyExpenses × months) + currentValue.
+     This represents: lost cash from purchase, lost cash from upkeep, plus the asset's residual value.
+   - Set removedSpending = null, addedInvestment = null.
 
-6. **Intent Fidelity (MANDATORY):**
-   - Infer event type from the text itself:
-     - Use type = "investment" for purchases that create/retain asset value (bitcoin/crypto, stocks/ETF/index fund, 401k contributions, home purchase, car purchase).
-     - Use type = "expense" for rent and recurring/consumption costs (apartment rent, HOA fees, lease payments, maintenance fees, utilities, insurance, subscriptions, taxes).
-     - Use type = "income" for salary/payroll/bonus/credits.
-   - For rent/HOA/lease/fees, NEVER classify as investment.
-   - For financial asset buys, NEVER classify as expense.
+Rules:
+- divergenceMonth MUST be a "YYYY-MM" string.
+- Use REAL historical prices for investments (NVIDIA, Bitcoin, Tesla, S&P500, etc.)
+- Be accurate with stock/crypto prices. Use close-to-close monthly prices.
+- Be realistic with depreciation rates and ongoing costs.
+- branchName should be short and descriptive, e.g. "No Coffee Since 2020", "NVIDIA Investor", "$100k Car Owner".
+- explanation should be 1-2 sentences explaining the outcome.
+- Only populate ONE of removedSpending, addedInvestment, or assetPurchase per scenario. The others must be null.
+- If the user's request doesn't fit any pattern, do your best to estimate monthlyImpact and totalImpact.
+- Current month is ${CURRENT_MONTH}.
 
-Return JSON matching the schema.
-For 'marketTrends', provide an entry for EVERY year from the divergenceYear to ${CURRENT_YEAR}.
-For 'newEvents', include BOTH the change AND the continuing life events.
+Return JSON matching the schema exactly.
 `;
 
 export const generateScenario = async (prompt: string): Promise<SimulationScenario> => {
   const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-2.5-flash',
     contents: prompt,
     config: {
       systemInstruction: SYSTEM_INSTRUCTION,
@@ -70,38 +69,46 @@ export const generateScenario = async (prompt: string): Promise<SimulationScenar
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          divergenceYear: { type: Type.INTEGER },
-          newEvents: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                year: { type: Type.INTEGER },
-                label: { type: Type.STRING },
-                amount: { type: Type.NUMBER },
-                type: { type: Type.STRING },
-                description: { type: Type.STRING }
-              },
-              required: ["year", "label", "amount", "type", "description"]
-            }
+          divergenceMonth: { type: Type.STRING, description: "YYYY-MM format" },
+          whatIfDescription: { type: Type.STRING, description: "Human-readable description of the what-if" },
+          removedSpending: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              category: { type: Type.STRING },
+              monthlyAmount: { type: Type.NUMBER, description: "Average monthly spend on this category" }
+            },
+            required: ["category", "monthlyAmount"]
           },
-          marketTrends: {
-            type: Type.ARRAY,
-            description: "Year-by-year growth rates based on historical accuracy for the chosen asset class.",
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                year: { type: Type.INTEGER },
-                growthRate: { type: Type.NUMBER, description: "e.g. 0.15 for 15%, -0.05 for -5%" },
-                narrative: { type: Type.STRING, description: "Short reason e.g. 'Crypto Crash' or 'Tech Boom'" }
-              },
-              required: ["year", "growthRate", "narrative"]
-            }
+          addedInvestment: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              asset: { type: Type.STRING, description: "Asset name e.g. NVIDIA, Bitcoin" },
+              amountInvested: { type: Type.NUMBER },
+              priceAtEntry: { type: Type.NUMBER, description: "Price per share/unit at divergence date" },
+              priceNow: { type: Type.NUMBER, description: "Price per share/unit today" }
+            },
+            required: ["asset", "amountInvested", "priceAtEntry", "priceNow"]
           },
+          assetPurchase: {
+            type: Type.OBJECT,
+            nullable: true,
+            properties: {
+              asset: { type: Type.STRING, description: "Asset name e.g. Car, Boat, House" },
+              purchasePrice: { type: Type.NUMBER, description: "Original purchase price" },
+              currentValue: { type: Type.NUMBER, description: "Estimated value today after depreciation" },
+              annualDepreciation: { type: Type.NUMBER, description: "Annual depreciation rate as negative decimal e.g. -0.15" },
+              monthlyExpenses: { type: Type.NUMBER, description: "Estimated monthly recurring costs (insurance, maintenance, etc.)" }
+            },
+            required: ["asset", "purchasePrice", "currentValue", "annualDepreciation", "monthlyExpenses"]
+          },
+          monthlyImpact: { type: Type.NUMBER, description: "Net monthly cash difference (positive = saving more)" },
+          totalImpact: { type: Type.NUMBER, description: "Total accumulated difference to present" },
           branchName: { type: Type.STRING },
           explanation: { type: Type.STRING }
         },
-        required: ["divergenceYear", "newEvents", "marketTrends", "branchName", "explanation"]
+        required: ["divergenceMonth", "whatIfDescription", "monthlyImpact", "totalImpact", "branchName", "explanation"]
       }
     }
   });
@@ -112,26 +119,22 @@ export const generateScenario = async (prompt: string): Promise<SimulationScenar
       throw new Error('Model returned an empty or invalid scenario payload.');
     }
 
-    const divergenceYear = Number((data as any).divergenceYear);
-    const branchName = typeof (data as any).branchName === 'string' ? (data as any).branchName : 'Alternate Timeline';
-    const explanation = typeof (data as any).explanation === 'string' ? (data as any).explanation : 'Scenario generated.';
-    const newEvents = Array.isArray((data as any).newEvents) ? (data as any).newEvents : [];
-    const marketTrends = Array.isArray((data as any).marketTrends) ? (data as any).marketTrends : [];
-
-    if (!Number.isFinite(divergenceYear)) {
-      throw new Error('Model did not return a valid divergence year.');
-    }
-    if (newEvents.length === 0) {
-      throw new Error('Model returned no new events for this request. Try rephrasing with explicit action, amount, and year.');
+    const divergenceMonth = typeof data.divergenceMonth === 'string' ? data.divergenceMonth : '';
+    if (!/^\d{4}-\d{2}$/.test(divergenceMonth)) {
+      throw new Error('Model did not return a valid divergence month (YYYY-MM).');
     }
 
     return {
-      divergenceYear,
-      newEvents,
-      marketTrends,
-      branchName,
-      explanation
-    } as SimulationScenario;
+      divergenceMonth,
+      whatIfDescription: data.whatIfDescription || '',
+      removedSpending: data.removedSpending || null,
+      addedInvestment: data.addedInvestment || null,
+      assetPurchase: data.assetPurchase || null,
+      monthlyImpact: Number(data.monthlyImpact) || 0,
+      totalImpact: Number(data.totalImpact) || 0,
+      branchName: data.branchName || 'Alternate Timeline',
+      explanation: data.explanation || 'Scenario generated.'
+    };
   } catch (e) {
     console.error("Failed to parse scenario", e);
     throw new Error(e instanceof Error ? e.message : "Timeline distortion detected. Could not stabilize scenario.");
