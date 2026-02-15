@@ -5,6 +5,9 @@ import { MOCK_ORIGINAL_BRANCH, CURRENT_MONTH, START_MONTH, formatMonthLabel, BRA
 import TimelineGraph from './components/TimelineGraph';
 import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
+import ProfilePage from './components/ProfilePage';
+import LokiLogo from './components/LokiLogo';
+import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import { generateScenario } from './services/geminiService';
 import { formatCurrency, buildCumulativeBalance, applyWhatIfDelta } from './services/financeUtils';
 
@@ -84,7 +87,8 @@ const buildOriginalBranchFromTransactions = (transactions: AtlasTransaction[]): 
     events,
     cumulativeBalance,
     calculatedNetWorth,
-    divergenceMonth: firstMonth
+    divergenceMonth: firstMonth,
+    scenarioAssets: []
   };
 };
 
@@ -108,7 +112,9 @@ const buildSpendingSummary = (events: FinancialEvent[]): string => {
   return lines.join('\n');
 };
 
-const App: React.FC = () => {
+const AppInner: React.FC = () => {
+  const { isDark, toggleTheme } = useTheme();
+  const [showProfile, setShowProfile] = useState(false);
   const [branches, setBranches] = useState<TimelineBranch[]>([MOCK_ORIGINAL_BRANCH]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(MOCK_ORIGINAL_BRANCH.id);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
@@ -276,15 +282,61 @@ User Request: ${content}`;
       const newBranchId = `alt-${Date.now()}`;
       const hierarchyCode = getNextHierarchyCode(parentBranch);
 
-      // Build the alternate timeline balance
-      // For asset purchases: lumpSumDelta is the negative purchase price (cash leaves),
-      // monthlyImpact carries the ongoing costs.
-      // For investments: lumpSumDelta is the total gain.
+      // ── Build scenario assets from what-if results ──
+      // Inherit parent's scenario assets and add any new ones from this scenario
+      const inheritedAssets = [...(parentBranch.scenarioAssets || [])];
+      const newScenarioAssets: typeof inheritedAssets = [];
+
+      // Classify asset category from name
+      const classifyAsset = (name: string): 'real_estate' | 'vehicle' | 'investment' | 'other' => {
+        const lower = name.toLowerCase();
+        if (/home|house|condo|apartment|property|real estate|land|duplex|townhouse/i.test(lower)) return 'real_estate';
+        if (/car|truck|boat|motorcycle|rv|suv|vehicle|tesla|bmw|toyota|honda/i.test(lower)) return 'vehicle';
+        if (/stock|share|nvidia|bitcoin|btc|eth|crypto|fund|etf|bond|reit|index/i.test(lower)) return 'investment';
+        return 'other';
+      };
+
+      if (scenario.assetPurchase) {
+        const ap = scenario.assetPurchase;
+        newScenarioAssets.push({
+          asset: ap.asset,
+          purchasePrice: ap.purchasePrice,
+          currentValue: ap.currentValue,
+          annualGrowthRate: ap.annualDepreciation, // negative = depreciating, positive = appreciating
+          monthlyExpenses: ap.monthlyExpenses,
+          purchaseMonth: scenario.divergenceMonth,
+          category: classifyAsset(ap.asset)
+        });
+      }
+
+      if (scenario.addedInvestment) {
+        const inv = scenario.addedInvestment;
+        const currentValue = Math.round((inv.priceNow / inv.priceAtEntry) * inv.amountInvested);
+        newScenarioAssets.push({
+          asset: inv.asset,
+          purchasePrice: inv.amountInvested,
+          currentValue,
+          annualGrowthRate: inv.priceNow > inv.priceAtEntry ? 0.10 : -0.05, // rough estimate
+          monthlyExpenses: 0,
+          purchaseMonth: scenario.divergenceMonth,
+          category: classifyAsset(inv.asset)
+        });
+      }
+
+      const allScenarioAssets = [...inheritedAssets, ...newScenarioAssets];
+
+      // Build the alternate timeline cash balance
+      // For asset purchases: cash outflow = purchase price, monthly costs reduce cash
+      // For investments: cash outflow = amount invested, monthly costs = 0
+      // The asset/investment VALUE is tracked separately in scenarioAssets
+      // Pattern D (one-time expenses): no assetPurchase or addedInvestment, use totalImpact directly
       const lumpSumDelta = scenario.assetPurchase
         ? -scenario.assetPurchase.purchasePrice   // cash outflow for purchase
         : scenario.addedInvestment
-          ? scenario.totalImpact                  // investment gain
-          : 0;
+          ? -scenario.addedInvestment.amountInvested  // cash outflow for investment
+          : scenario.removedSpending
+            ? 0  // recurring savings handled via monthlyImpact
+            : scenario.totalImpact;  // one-time expense (Pattern D) — totalImpact is negative
 
       const altBalance = applyWhatIfDelta(
         parentBranch.cumulativeBalance,
@@ -293,7 +345,7 @@ User Request: ${content}`;
         lumpSumDelta
       );
 
-      const altNetWorth = altBalance.length > 0
+      const altCashBalance = altBalance.length > 0
         ? altBalance[altBalance.length - 1].balance
         : parentBranch.calculatedNetWorth + scenario.totalImpact;
 
@@ -307,14 +359,20 @@ User Request: ${content}`;
         events: parentBranch.events, // same events as parent
         marketTrends: [],
         cumulativeBalance: altBalance,
-        calculatedNetWorth: altNetWorth,
-        divergenceMonth: scenario.divergenceMonth
+        calculatedNetWorth: altCashBalance,
+        divergenceMonth: scenario.divergenceMonth,
+        scenarioAssets: allScenarioAssets
       };
 
       setBranches(prev => [...prev, newBranch]);
       setSelectedBranchId(newBranchId);
 
-      const difference = altNetWorth - parentBranch.calculatedNetWorth;
+      // Compute full net worth: cash + scenario asset values + investment portfolio
+      const scenarioAssetValue = allScenarioAssets.reduce((sum, a) => sum + a.currentValue, 0);
+      const fullNetWorth = altCashBalance + scenarioAssetValue;
+      const parentScenarioAssetValue = (parentBranch.scenarioAssets || []).reduce((sum, a) => sum + a.currentValue, 0);
+      const parentFullNetWorth = parentBranch.calculatedNetWorth + parentScenarioAssetValue;
+      const difference = fullNetWorth - parentFullNetWorth;
       const diffStr = difference >= 0 ? `+${formatCurrency(difference)}` : formatCurrency(difference);
 
       let detailStr = '';
@@ -322,17 +380,19 @@ User Request: ${content}`;
         detailStr = `By eliminating ${scenario.removedSpending.category} spending (~${formatCurrency(scenario.removedSpending.monthlyAmount)}/mo), you'd save ${formatCurrency(scenario.totalImpact)} total.`;
       } else if (scenario.addedInvestment) {
         const inv = scenario.addedInvestment;
-        detailStr = `A ${formatCurrency(inv.amountInvested)} investment in ${inv.asset} at $${inv.priceAtEntry.toLocaleString()}/share would be worth ${formatCurrency(Math.round((inv.priceNow / inv.priceAtEntry) * inv.amountInvested))} today at $${inv.priceNow.toLocaleString()}/share.`;
+        const investmentCurrentValue = Math.round((inv.priceNow / inv.priceAtEntry) * inv.amountInvested);
+        detailStr = `A ${formatCurrency(inv.amountInvested)} investment in ${inv.asset} at $${inv.priceAtEntry.toLocaleString()}/share would be worth ${formatCurrency(investmentCurrentValue)} today at $${inv.priceNow.toLocaleString()}/share. This adds ${formatCurrency(investmentCurrentValue)} to your portfolio.`;
       } else if (scenario.assetPurchase) {
         const ap = scenario.assetPurchase;
-        const depRate = Math.abs(ap.annualDepreciation * 100).toFixed(0);
-        detailStr = `Buying a ${ap.asset} for ${formatCurrency(ap.purchasePrice)} — it would be worth ~${formatCurrency(ap.currentValue)} today (${depRate}%/yr depreciation). Ongoing costs: ~${formatCurrency(ap.monthlyExpenses)}/mo. Total cash impact: ${formatCurrency(scenario.totalImpact)}.`;
+        const isAppreciating = ap.annualDepreciation >= 0;
+        const rateStr = `${Math.abs(ap.annualDepreciation * 100).toFixed(0)}%/yr ${isAppreciating ? 'appreciation' : 'depreciation'}`;
+        detailStr = `Buying a ${ap.asset} for ${formatCurrency(ap.purchasePrice)} — it would be worth ~${formatCurrency(ap.currentValue)} today (${rateStr}). This asset adds ${formatCurrency(ap.currentValue)} to your portfolio. Ongoing costs: ~${formatCurrency(ap.monthlyExpenses)}/mo.`;
       }
 
       const aiMsg: ChatMessage = {
         id: Date.now().toString(),
         role: 'assistant',
-        content: `Timeline branch ${hierarchyCode} created from ${formatMonthLabel(scenario.divergenceMonth)}! ${scenario.explanation} ${detailStr} Impact on today's balance: ${diffStr}. New projected balance: ${formatCurrency(altNetWorth)}.`,
+        content: `Timeline branch ${hierarchyCode} created from ${formatMonthLabel(scenario.divergenceMonth)}! ${scenario.explanation} ${detailStr} Cash impact: ${formatCurrency(altCashBalance - parentBranch.calculatedNetWorth)}. Net worth impact: ${diffStr}. New net worth: ${formatCurrency(fullNetWorth)} (Cash: ${formatCurrency(altCashBalance)} + Assets: ${formatCurrency(scenarioAssetValue)}).`,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, aiMsg]);
@@ -416,8 +476,8 @@ User Request: ${content}`;
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-sm font-semibold">
+      <div className={`min-h-screen flex items-center justify-center ${isDark ? '' : 'bg-slate-50'}`}>
+        <div className={`px-4 py-2 rounded-xl border text-sm font-semibold ${isDark ? 'glass border-blue-500/30 text-blue-300' : 'bg-white border-blue-200 text-blue-600 shadow-sm'}`}>
           Initializing secure session...
         </div>
       </div>
@@ -426,10 +486,14 @@ User Request: ${content}`;
 
   if (!sessionUser) {
     return (
-      <div className="min-h-screen p-6 flex items-center justify-center">
-        <div className="glass w-full max-w-md p-6 rounded-2xl border border-slate-700/50 space-y-4">
-          <h2 className="text-xl font-bold text-white">{authMode === 'signup' ? 'Create account' : 'Login'}</h2>
-          <p className="text-slate-400 text-sm">Use your account to access transactions linked to your profile.</p>
+      <div className={`min-h-screen p-6 flex items-center justify-center ${isDark ? '' : 'bg-slate-50'}`}>
+        <div className={`w-full max-w-md p-6 rounded-2xl border space-y-4 ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-xl'}`}>
+          <div className="flex items-center gap-3 mb-2">
+            <LokiLogo size={36} />
+            <h1 className={`text-lg font-bold font-heading tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>Financial Time Machine</h1>
+          </div>
+          <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>{authMode === 'signup' ? 'Create account' : 'Login'}</h2>
+          <p className={`text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Use your account to access transactions linked to your profile.</p>
 
           <form onSubmit={handleAuthSubmit} className="space-y-3">
             <input
@@ -437,7 +501,7 @@ User Request: ${content}`;
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
               placeholder="Email"
-              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              className={`w-full rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-slate-900/60 border border-slate-700 text-white' : 'bg-slate-50 border border-slate-200 text-slate-900'}`}
               required
             />
             <input
@@ -445,7 +509,7 @@ User Request: ${content}`;
               value={authPassword}
               onChange={(e) => setAuthPassword(e.target.value)}
               placeholder="Password"
-              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              className={`w-full rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-slate-900/60 border border-slate-700 text-white' : 'bg-slate-50 border border-slate-200 text-slate-900'}`}
               required
               minLength={8}
             />
@@ -469,40 +533,70 @@ User Request: ${content}`;
               setAuthMode(prev => prev === 'login' ? 'signup' : 'login');
               setAuthError(null);
             }}
-            className="text-xs text-slate-400 hover:text-slate-200"
+            className={`text-xs ${isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
           >
             {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Login'}
           </button>
+
+          {/* Theme toggle on login page */}
+          <div className="flex justify-center pt-2">
+            <button onClick={toggleTheme} className={`text-xs flex items-center gap-1.5 ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}>
+              <i className={`fa-solid ${isDark ? 'fa-sun' : 'fa-moon'}`}></i>
+              {isDark ? 'Light mode' : 'Dark mode'}
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
+  if (showProfile) {
+    return (
+      <ProfilePage
+        user={sessionUser}
+        onBack={() => setShowProfile(false)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6">
+    <div className={`min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6 transition-colors duration-300 ${isDark ? '' : 'bg-slate-50'}`}>
       {/* Header */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-        <div className="relative">
-          <div className="absolute -left-4 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-500 via-purple-500 to-transparent rounded-full hidden md:block"></div>
-          <h1 className="text-4xl font-bold text-white tracking-tighter flex items-center gap-3">
-            <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">FINANCIAL</span>
-            <span className="font-light italic text-slate-500">TIME MACHINE</span>
-          </h1>
-          <p className="text-slate-400 text-sm mt-1 font-medium tracking-tight">
-            Go back in time. Change a decision. See the ripple effect.
-            <span className="text-slate-600 font-mono text-[10px] ml-2 px-2 py-0.5 border border-slate-800 rounded">v3.0</span>
-          </p>
+        <div className="relative flex items-center gap-4">
+          <LokiLogo size={48} />
+          <div>
+            <div className="absolute -left-4 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-500 via-purple-500 to-transparent rounded-full hidden md:block"></div>
+            <h1 className={`text-4xl font-bold tracking-tighter flex items-center gap-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">FINANCIAL</span>
+              <span className={`font-light italic ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>TIME MACHINE</span>
+            </h1>
+            <p className={`text-sm mt-1 font-medium tracking-tight ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              Go back in time. Change a decision. See the ripple effect.
+              <span className={`font-mono text-[10px] ml-2 px-2 py-0.5 border rounded ${isDark ? 'text-slate-600 border-slate-800' : 'text-slate-400 border-slate-300'}`}>v3.0</span>
+            </p>
+          </div>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <i className={`fa-solid ${isDark ? 'fa-sun text-amber-400 group-hover:text-amber-300' : 'fa-moon text-blue-500 group-hover:text-blue-600'} transition-colors text-sm`}></i>
+          </button>
+
           {/* Refresh — clear all branches */}
           <button
             onClick={resetBranches}
             disabled={branches.length <= 1}
             title="Reset all branches"
-            className="glass px-3 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group disabled:opacity-30 disabled:cursor-not-allowed"
+            className={`px-3 py-2 rounded-2xl transition-all group disabled:opacity-30 disabled:cursor-not-allowed ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
-            <i className="fa-solid fa-arrows-rotate text-slate-400 group-hover:text-blue-400 transition-colors text-sm"></i>
+            <i className={`fa-solid fa-arrows-rotate group-hover:text-blue-400 transition-colors text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
           </button>
 
           {/* Prune — delete selected branch + children */}
@@ -510,33 +604,45 @@ User Request: ${content}`;
             onClick={pruneBranch}
             disabled={selectedBranch.isOriginal}
             title={selectedBranch.isOriginal ? 'Cannot prune the Prime timeline' : `Prune branch ${selectedBranch.hierarchyCode}`}
-            className="glass px-3 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group disabled:opacity-30 disabled:cursor-not-allowed"
+            className={`px-3 py-2 rounded-2xl transition-all group disabled:opacity-30 disabled:cursor-not-allowed ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
-            <i className="fa-solid fa-scissors text-slate-400 group-hover:text-amber-400 transition-colors text-sm"></i>
-            <span className="text-[9px] font-bold text-slate-500 group-hover:text-amber-300 uppercase tracking-widest ml-1.5 hidden md:inline">Prune</span>
+            <i className={`fa-solid fa-scissors group-hover:text-amber-400 transition-colors text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
+            <span className={`text-[9px] font-bold group-hover:text-amber-300 uppercase tracking-widest ml-1.5 hidden md:inline ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Prune</span>
           </button>
 
-          <div className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5">
+          {/* Profile button */}
+          <button
+            onClick={() => setShowProfile(true)}
+            title="Edit Profile"
+            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
+              <span className="text-[10px] font-bold text-white">{sessionUser.email.charAt(0).toUpperCase()}</span>
+            </div>
+          </button>
+
+          <div className={`px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl ${isDark ? 'glass border-slate-700/50 shadow-blue-500/5' : 'bg-white border border-slate-200 shadow-sm'}`}>
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{sessionUser.email}</span>
+            <span className={`text-[10px] font-bold uppercase tracking-widest ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sessionUser.email}</span>
           </div>
           <button
             onClick={handleLogout}
-            className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group"
+            title="Logout"
+            className={`px-4 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
-            <i className="fa-solid fa-right-from-bracket text-slate-400 group-hover:text-rose-400 transition-colors"></i>
+            <i className={`fa-solid fa-right-from-bracket group-hover:text-rose-400 transition-colors ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
           </button>
         </div>
       </header>
 
       {isLoadingAtlas && (
-        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-xs font-semibold">
+        <div className={`px-4 py-2 rounded-xl border text-xs font-semibold ${isDark ? 'glass border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-600'}`}>
           Syncing transactions from Atlas...
         </div>
       )}
 
       {atlasLoadError && (
-        <div className="glass px-4 py-2 rounded-xl border border-amber-500/30 text-amber-300 text-xs font-semibold">
+        <div className={`px-4 py-2 rounded-xl border text-xs font-semibold ${isDark ? 'glass border-amber-500/30 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-600'}`}>
           {atlasLoadError}
         </div>
       )}
@@ -559,14 +665,14 @@ User Request: ${content}`;
           />
 
           {/* Timeline Ledger — show monthly events for selected branch */}
-          <div className="glass p-6 rounded-2xl relative overflow-hidden group border border-slate-700/50">
+          <div className={`p-6 rounded-2xl relative overflow-hidden group border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
             <div className="absolute top-0 left-0 w-1.5 h-full" style={{ backgroundColor: selectedBranch.color }}></div>
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold flex items-center gap-2">
+              <h3 className={`text-lg font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 <i className="fa-solid fa-list-check text-slate-400"></i>
                 Timeline Ledger: <span style={{ color: selectedBranch.color }}>Branch {selectedBranch.hierarchyCode} - {selectedBranch.name}</span>
               </h3>
-              <span className="text-[10px] font-black bg-slate-800 px-3 py-1 rounded-full text-slate-400 uppercase tracking-widest border border-slate-700">
+              <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest border ${isDark ? 'bg-slate-800 text-slate-400 border-slate-700' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                 {selectedBranch.events.length} Transactions
               </span>
             </div>
@@ -575,17 +681,17 @@ User Request: ${content}`;
               {selectedBranch.events.slice(-40).map((event, idx) => (
                   <div 
                     key={idx} 
-                    className="flex items-start gap-4 p-4 rounded-2xl transition-all border bg-slate-800/40 border-slate-700/50 shadow-lg"
+                    className={`flex items-start gap-4 p-4 rounded-2xl transition-all border shadow-lg ${isDark ? 'bg-slate-800/40 border-slate-700/50' : 'bg-slate-50 border-slate-200'}`}
                   >
                     <div className="flex flex-col items-center">
-                      <div className="w-10 h-10 rounded-xl bg-slate-950 flex items-center justify-center border border-slate-800 mb-1">
-                        <span className="text-[9px] font-black text-white">{formatMonthLabel(event.month)}</span>
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center border mb-1 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-200'}`}>
+                        <span className={`text-[9px] font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{formatMonthLabel(event.month)}</span>
                       </div>
                     </div>
                     
                     <div className="flex-1">
                       <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-slate-100">{event.label}</p>
+                        <p className={`text-xs font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{event.label}</p>
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                           event.type === 'income' ? 'bg-emerald-500/10 text-emerald-400' : 
                           event.type === 'expense' ? 'bg-rose-500/10 text-rose-400' : 'bg-blue-500/10 text-blue-400'
@@ -593,9 +699,9 @@ User Request: ${content}`;
                           {event.type}
                         </span>
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">{event.description}</p>
+                      <p className={`text-[10px] mt-1 line-clamp-2 leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{event.description}</p>
                       <div className="mt-2">
-                        <span className="text-xs font-mono font-bold text-slate-300">{formatCurrency(event.amount)}</span>
+                        <span className={`text-xs font-mono font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{formatCurrency(event.amount)}</span>
                       </div>
                     </div>
                   </div>
@@ -613,8 +719,8 @@ User Request: ${content}`;
           />
           
           {/* Quick Context Panel */}
-          <div className="mt-4 glass p-5 rounded-2xl border border-slate-700/50">
-            <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+          <div className={`mt-4 p-5 rounded-2xl border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
+            <h4 className={`text-[10px] font-black uppercase tracking-widest mb-4 flex items-center gap-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
               <i className="fa-solid fa-microchip"></i>
               What-If Suggestions
             </h4>
@@ -629,7 +735,11 @@ User Request: ${content}`;
                   key={i} 
                   onClick={() => handleSendMessage(s)}
                   disabled={isProcessing}
-                  className="w-full text-left p-2.5 rounded-xl bg-slate-900/40 border border-slate-800 hover:border-blue-500/50 hover:bg-slate-800/60 transition-all text-[11px] text-slate-400 flex items-center justify-between group"
+                  className={`w-full text-left p-2.5 rounded-xl border transition-all text-[11px] flex items-center justify-between group ${
+                    isDark
+                      ? 'bg-slate-900/40 border-slate-800 hover:border-blue-500/50 hover:bg-slate-800/60 text-slate-400'
+                      : 'bg-slate-50 border-slate-200 hover:border-blue-400 hover:bg-blue-50 text-slate-500'
+                  }`}
                 >
                   {s}
                   <i className="fa-solid fa-chevron-right text-[8px] opacity-0 group-hover:opacity-100 transition-opacity"></i>
@@ -641,13 +751,13 @@ User Request: ${content}`;
       </div>
 
       {/* Footer */}
-      <footer className="pt-8 border-t border-slate-800/50 flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] text-slate-500 font-bold tracking-widest uppercase">
+      <footer className={`pt-8 border-t flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] font-bold tracking-widest uppercase ${isDark ? 'border-slate-800/50 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
         <div className="flex gap-6">
           <span className="flex items-center gap-2"><i className="fa-solid fa-microchip text-blue-500"></i> Engine: Gemini 2.5 Flash</span>
           <span className="flex items-center gap-2"><i className="fa-solid fa-shield-halved text-emerald-500"></i> Data: MongoDB Atlas</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-slate-600">Analyzing alternate timelines...</span>
+          <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>Analyzing alternate timelines...</span>
           <div className="flex gap-1">
             <div className="w-1 h-1 rounded-full bg-blue-500"></div>
             <div className="w-1 h-1 rounded-full bg-blue-500/50"></div>
@@ -659,5 +769,11 @@ User Request: ${content}`;
     </div>
   );
 };
+
+const App: React.FC = () => (
+  <ThemeProvider>
+    <AppInner />
+  </ThemeProvider>
+);
 
 export default App;

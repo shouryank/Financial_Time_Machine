@@ -56,5 +56,6 @@ export const MOCK_ORIGINAL_BRANCH: TimelineBranch = {
   marketTrends: [],
   cumulativeBalance: [],
   calculatedNetWorth: 0,
-  divergenceMonth: START_MONTH
+  divergenceMonth: START_MONTH,
+  scenarioAssets: []
 };

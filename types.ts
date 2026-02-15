@@ -25,6 +25,19 @@ export interface TimelineBranch {
   cumulativeBalance: MonthlyBalance[];   // running balance per month for chart
   calculatedNetWorth: number;            // final balance at present month
   divergenceMonth: string;               // "YYYY-MM"
+  /** Scenario-created assets (homes, cars, stocks bought via what-if) */
+  scenarioAssets: ScenarioAsset[];
+}
+
+/** An asset or investment created by a what-if scenario branch */
+export interface ScenarioAsset {
+  asset: string;              // e.g. "Home", "NVIDIA", "Car"
+  purchasePrice: number;      // original cost
+  currentValue: number;       // estimated value today
+  annualGrowthRate: number;   // positive = appreciating (home), negative = depreciating (car)
+  monthlyExpenses: number;    // recurring costs (tax, insurance, maintenance)
+  purchaseMonth: string;      // "YYYY-MM" when purchased in the scenario
+  category: 'real_estate' | 'vehicle' | 'investment' | 'other';
 }
 
 /** Pre-computed running balance for charting */

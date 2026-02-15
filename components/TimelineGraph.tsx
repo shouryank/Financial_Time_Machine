@@ -3,6 +3,7 @@ import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { TimelineBranch } from '../types';
 import { CURRENT_MONTH, START_MONTH, monthRange, formatMonthLabel } from '../constants';
 import { formatCurrency } from '../services/financeUtils';
+import { useTheme } from '../contexts/ThemeContext';
 
 interface TimelineGraphProps {
   branches: TimelineBranch[];
@@ -22,6 +23,7 @@ const ZOOM_LEVELS = [
 ];
 
 const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchId, onSelectBranch, onQuickBranch, isProcessing }) => {
+  const { isDark } = useTheme();
   const [activeNode, setActiveNode] = useState<{ month: string; x: number; y: number; branchId: string; branchCode: string; branchColor: string } | null>(null);
   const [hoveredNode, setHoveredNode] = useState<{ month: string; balance: number; x: number; y: number; branchColor: string } | null>(null);
   const [promptValue, setPromptValue] = useState('');
@@ -156,12 +158,12 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
   };
 
   return (
-    <div ref={containerRef} className="w-full glass rounded-2xl p-6 relative min-h-[450px] border border-slate-700/50">
+    <div ref={containerRef} className={`w-full rounded-2xl p-6 relative min-h-[450px] border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
       {/* Sticky header — stays in place when scrolling horizontally */}
       <div className="sticky left-0 z-10 flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <i className="fa-solid fa-timeline text-blue-400"></i>
-          <span className="text-sm font-semibold tracking-wider uppercase text-slate-400">Multiverse Navigator</span>
+          <span className={`text-sm font-semibold tracking-wider uppercase ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Multiverse Navigator</span>
         </div>
 
         <div className="flex items-center gap-3">
@@ -224,11 +226,11 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
             <line
               x1={padding.left} y1={getY(v)}
               x2={width - padding.right} y2={getY(v)}
-              stroke="#1e293b" strokeWidth="1"
+              stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="1"
             />
             <text
               x={padding.left - 8} y={getY(v) + 4}
-              textAnchor="end" fontSize="9" fill="#64748b" className="font-mono"
+              textAnchor="end" fontSize="9" fill={isDark ? '#64748b' : '#94a3b8'} className="font-mono"
             >
               {formatCurrency(v)}
             </text>
@@ -239,7 +241,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
         <line
           x1={padding.left} y1={height - padding.bottom}
           x2={width - padding.right} y2={height - padding.bottom}
-          stroke="#334155" strokeWidth="1"
+          stroke={isDark ? '#334155' : '#cbd5e1'} strokeWidth="1"
         />
 
         {/* X-axis month labels */}
@@ -248,10 +250,10 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
           const x = getX(m);
           return (
             <g key={m}>
-              <text x={x} y={height - padding.bottom + 16} textAnchor="middle" fontSize="9" fill="#64748b" className="font-heading">
+              <text x={x} y={height - padding.bottom + 16} textAnchor="middle" fontSize="9" fill={isDark ? '#64748b' : '#94a3b8'} className="font-heading">
                 {formatMonthLabel(m)}
               </text>
-              <line x1={x} y1={height - padding.bottom} x2={x} y2={height - padding.bottom + 4} stroke="#334155" strokeWidth="1" />
+              <line x1={x} y1={height - padding.bottom} x2={x} y2={height - padding.bottom + 4} stroke={isDark ? '#334155' : '#cbd5e1'} strokeWidth="1" />
             </g>
           );
         })}
@@ -449,7 +451,11 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
         {branches.map(b => (
           <button
             key={b.id}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all text-[10px] font-bold uppercase tracking-widest ${selectedBranchId === b.id ? 'bg-white/10 border-white/30 text-white shadow-lg shadow-black/20' : 'bg-slate-900/50 border-transparent text-slate-500 hover:text-slate-300'}`}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border transition-all text-[10px] font-bold uppercase tracking-widest ${
+              selectedBranchId === b.id
+                ? isDark ? 'bg-white/10 border-white/30 text-white shadow-lg shadow-black/20' : 'bg-blue-50 border-blue-300 text-blue-900 shadow-sm'
+                : isDark ? 'bg-slate-900/50 border-transparent text-slate-500 hover:text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-500 hover:text-slate-700'
+            }`}
             onClick={() => onSelectBranch(b.id)}
           >
             <div className="w-2 h-2 rounded-full" style={{ backgroundColor: b.color }}></div>

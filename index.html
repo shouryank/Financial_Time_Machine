@@ -1,6 +1,6 @@
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,18 +13,54 @@
   <style>
     body {
       font-family: 'Outfit', sans-serif;
+      overflow-x: hidden;
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+    /* Dark mode (default) */
+    [data-theme="dark"] body {
       background-color: #020617;
       color: #f8fafc;
-      overflow-x: hidden;
     }
-    h1, h2, h3, .font-heading {
-      font-family: 'Space Grotesk', sans-serif;
+    [data-theme="dark"] .animated-bg {
+      background: radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%);
     }
-    .glass {
+    [data-theme="dark"] .glass {
       background: rgba(15, 23, 42, 0.6);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    [data-theme="dark"] ::-webkit-scrollbar-thumb {
+      background: #334155;
+    }
+
+    /* Light mode */
+    [data-theme="light"] body {
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    [data-theme="light"] .animated-bg {
+      background: radial-gradient(circle at 50% 50%, #e2e8f0 0%, #f8fafc 100%);
+    }
+    [data-theme="light"] .glass {
+      background: rgba(255, 255, 255, 0.8);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    [data-theme="light"] ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    [data-theme="light"] ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+    }
+
+    h1, h2, h3, .font-heading {
+      font-family: 'Space Grotesk', sans-serif;
     }
     .neon-text-blue {
       text-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
@@ -35,15 +71,8 @@
     ::-webkit-scrollbar {
       width: 6px;
     }
-    ::-webkit-scrollbar-track {
-      background: #0f172a;
-    }
     ::-webkit-scrollbar-thumb {
-      background: #334155;
       border-radius: 10px;
-    }
-    .animated-bg {
-      background: radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%);
     }
   </style>
 </head>

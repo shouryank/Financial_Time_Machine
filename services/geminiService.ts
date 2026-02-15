@@ -45,6 +45,15 @@ C) **Buy a depreciating asset (one-time purchase)**: e.g. "What if I bought a ca
      This represents: lost cash from purchase, lost cash from upkeep, plus the asset's residual value.
    - Set removedSpending = null, addedInvestment = null.
 
+D) **One-time expense / payment (no asset acquired)**: e.g. "What if I had $10k in medical bills?", "What if I donated $5k to charity in 2022?", "What if I paid $20k in legal fees?"
+   - This is a pure CASH OUTFLOW with NO asset or investment created.
+   - Set removedSpending = null, addedInvestment = null, assetPurchase = null.
+   - monthlyImpact = 0 (it's a one-time cost, not recurring).
+   - totalImpact = -(expense amount). E.g. for $10k medical bills → totalImpact = -10000.
+   - Examples: medical/hospital bills, emergency repairs, legal fees, gifts, donations, tuition payments, wedding costs, funeral costs, fines, tax penalties, moving expenses.
+   - If the user mentions ongoing costs (e.g. "medical bills every month"), treat the monthly portion as monthlyImpact and the initial cost as totalImpact.
+   - branchName should describe the expense, e.g. "$10K Medical Bills", "$5K Charity Donation".
+
 Rules:
 - divergenceMonth MUST be a "YYYY-MM" string.
 - Use REAL historical prices for investments (NVIDIA, Bitcoin, Tesla, S&P500, etc.)

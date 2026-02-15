@@ -1,5 +1,5 @@
 
-import { FinancialEvent, MonthlyBalance } from '../types';
+import { FinancialEvent, MonthlyBalance, ScenarioAsset } from '../types';
 import { CURRENT_MONTH, START_MONTH, monthRange } from '../constants';
 
 /**
@@ -148,4 +148,50 @@ export const calculateInvestmentPortfolio = (
   const totalPortfolioValue = holdings.reduce((sum, h) => sum + h.currentValue, 0);
   const totalPrincipal = holdings.reduce((sum, h) => sum + h.principal, 0);
   return { holdings, totalPortfolioValue, totalPrincipal };
+};
+
+export interface ScenarioAssetHolding {
+  asset: string;
+  category: string;
+  purchasePrice: number;
+  currentValue: number;
+  gainLoss: number;
+  annualGrowthRate: number;
+  monthlyExpenses: number;
+  totalExpenses: number;
+  purchaseMonth: string;
+}
+
+/**
+ * Calculate the current value of scenario-created assets (homes, vehicles, stocks).
+ * These are assets created through what-if branches, not from real transaction data.
+ */
+export const calculateScenarioAssetPortfolio = (
+  scenarioAssets: ScenarioAsset[],
+  currentMonth: string
+): { holdings: ScenarioAssetHolding[]; totalAssetValue: number; totalPurchaseCost: number; totalOngoingExpenses: number } => {
+  if (!scenarioAssets || scenarioAssets.length === 0) {
+    return { holdings: [], totalAssetValue: 0, totalPurchaseCost: 0, totalOngoingExpenses: 0 };
+  }
+
+  const holdings: ScenarioAssetHolding[] = scenarioAssets.map(asset => {
+    const months = Math.max(0, monthsBetween(asset.purchaseMonth, currentMonth));
+    const totalExpenses = Math.round(asset.monthlyExpenses * months);
+    return {
+      asset: asset.asset,
+      category: asset.category,
+      purchasePrice: asset.purchasePrice,
+      currentValue: asset.currentValue,
+      gainLoss: asset.currentValue - asset.purchasePrice,
+      annualGrowthRate: asset.annualGrowthRate,
+      monthlyExpenses: asset.monthlyExpenses,
+      totalExpenses,
+      purchaseMonth: asset.purchaseMonth,
+    };
+  });
+
+  const totalAssetValue = holdings.reduce((sum, h) => sum + h.currentValue, 0);
+  const totalPurchaseCost = holdings.reduce((sum, h) => sum + h.purchasePrice, 0);
+  const totalOngoingExpenses = holdings.reduce((sum, h) => sum + h.totalExpenses, 0);
+  return { holdings, totalAssetValue, totalPurchaseCost, totalOngoingExpenses };
 };
