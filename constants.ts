@@ -15,6 +15,7 @@ export const INITIAL_EVENTS: FinancialEvent[] = [
 
 export const MOCK_ORIGINAL_BRANCH: TimelineBranch = {
   id: 'original',
+  hierarchyCode: '1',
   name: 'Prime Timeline',
   color: '#3b82f6', // blue
   isOriginal: true,
