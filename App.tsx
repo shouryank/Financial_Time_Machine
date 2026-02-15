@@ -1,12 +1,12 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { TimelineBranch, ChatMessage, FinancialEvent } from './types';
 import { MOCK_ORIGINAL_BRANCH, START_YEAR, CURRENT_YEAR } from './constants';
 import TimelineGraph from './components/TimelineGraph';
 import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
 import { generateScenario } from './services/geminiService';
-import { formatCurrency } from './services/financeUtils';
+import { calculateCompoundGrowth, formatCurrency } from './services/financeUtils';
 
 const parseAmountFromPrompt = (text: string): number | null => {
   const matches = [...text.matchAll(/\$?\s*(\d+(?:\.\d+)?)\s*([kKmM])?/g)];
@@ -147,9 +147,69 @@ const getTransactionValidationError = (text: string, branches: TimelineBranch[])
   return null;
 };
 
+type AtlasTransaction = {
+  id?: string;
+  date?: string;
+  amount?: number;
+  merchant?: string;
+  category?: string;
+  accountId?: string;
+  type?: string;
+  intent?: string;
+};
+
+const mapTransactionType = (rawType: string | undefined, amount: number): FinancialEvent['type'] => {
+  const normalized = (rawType || '').toLowerCase();
+  if (normalized === 'credit') return 'income';
+  if (normalized === 'debit') return 'expense';
+  return amount < 0 ? 'expense' : 'income';
+};
+
+const mapTransactionToFinancialEvent = (tx: AtlasTransaction, index: number): FinancialEvent => {
+  const parsedAmount = Number(tx.amount);
+  const safeAmount = Number.isFinite(parsedAmount) ? Math.abs(parsedAmount) : 0;
+
+  const parsedDate = tx.date ? new Date(tx.date) : null;
+  const year = parsedDate && Number.isFinite(parsedDate.getTime())
+    ? parsedDate.getUTCFullYear()
+    : CURRENT_YEAR;
+
+  const label = (tx.merchant || '').trim() || (tx.category || '').trim() || `Transaction ${index + 1}`;
+  const descriptionParts = [tx.category, tx.intent, tx.accountId].filter(Boolean);
+
+  return {
+    year: Math.min(CURRENT_YEAR, Math.max(START_YEAR, year)),
+    label,
+    amount: safeAmount,
+    type: mapTransactionType(tx.type, Number(tx.amount ?? 0)),
+    description: descriptionParts.length > 0 ? descriptionParts.join(' • ') : 'Imported from Atlas'
+  };
+};
+
+const buildOriginalBranchFromTransactions = (transactions: AtlasTransaction[]): TimelineBranch => {
+  const events = transactions
+    .map(mapTransactionToFinancialEvent)
+    .filter(event => event.amount > 0)
+    .sort((a, b) => a.year - b.year);
+
+  if (events.length === 0) return MOCK_ORIGINAL_BRANCH;
+
+  const divergenceYear = Math.min(...events.map(e => e.year));
+  const calculatedNetWorth = calculateCompoundGrowth(0, events, []);
+
+  return {
+    ...MOCK_ORIGINAL_BRANCH,
+    events,
+    divergenceYear,
+    calculatedNetWorth
+  };
+};
+
 const App: React.FC = () => {
   const [branches, setBranches] = useState<TimelineBranch[]>([MOCK_ORIGINAL_BRANCH]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(MOCK_ORIGINAL_BRANCH.id);
+  const [isLoadingAtlas, setIsLoadingAtlas] = useState(true);
+  const [atlasLoadError, setAtlasLoadError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -159,6 +219,47 @@ const App: React.FC = () => {
       timestamp: new Date()
     }
   ]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadAtlasTransactions = async () => {
+      setIsLoadingAtlas(true);
+      setAtlasLoadError(null);
+
+      try {
+        const response = await fetch('/api/transactions');
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payload: { transactions?: AtlasTransaction[] } = await response.json();
+        const transactions = Array.isArray(payload.transactions) ? payload.transactions : [];
+
+        if (transactions.length === 0) {
+          if (!alive) return;
+          setAtlasLoadError('No transactions found in Atlas. Showing default timeline values.');
+          return;
+        }
+
+        const branchFromAtlas = buildOriginalBranchFromTransactions(transactions);
+        if (!alive) return;
+        setBranches([branchFromAtlas]);
+        setSelectedBranchId(branchFromAtlas.id);
+      } catch {
+        if (!alive) return;
+        setAtlasLoadError('Atlas sync failed. Showing default timeline values.');
+      } finally {
+        if (!alive) return;
+        setIsLoadingAtlas(false);
+      }
+    };
+
+    loadAtlasTransactions();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const selectedBranch = branches.find(b => b.id === selectedBranchId) || branches[0];
   const originalBranch = branches.find(b => b.id === 'original') || MOCK_ORIGINAL_BRANCH;
@@ -352,6 +453,18 @@ const App: React.FC = () => {
           </button>
         </div>
       </header>
+
+      {isLoadingAtlas && (
+        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-xs font-semibold">
+          Syncing transactions from Atlas...
+        </div>
+      )}
+
+      {atlasLoadError && (
+        <div className="glass px-4 py-2 rounded-xl border border-amber-500/30 text-amber-300 text-xs font-semibold">
+          {atlasLoadError}
+        </div>
+      )}
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
