@@ -356,6 +356,29 @@ const App: React.FC = () => {
     openPlaidLink();
   };
 
+  const handlePlaidDisconnect = async () => {
+    setPlaidError(null);
+    setIsPlaidLoading(true);
+    try {
+      const response = await fetch('/api/plaid/disconnect', { method: 'POST' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload?.error || 'Unable to disconnect Plaid');
+      }
+      setIsPlaidConnected(false);
+
+      const tokenResponse = await fetch('/api/plaid/create_link_token', { method: 'POST' });
+      if (tokenResponse.ok) {
+        const tokenPayload: { link_token?: string } = await tokenResponse.json();
+        setPlaidLinkToken(tokenPayload.link_token || null);
+      }
+    } catch (error: any) {
+      setPlaidError(error?.message || 'Unable to disconnect Plaid');
+    } finally {
+      setIsPlaidLoading(false);
+    }
+  };
+
   useEffect(() => {
     let alive = true;
 
@@ -709,6 +732,16 @@ const App: React.FC = () => {
               {isPlaidConnected ? 'Plaid Connected' : isPlaidLoading ? 'Connecting Plaid...' : 'Connect Plaid'}
             </span>
           </button>
+          {isPlaidConnected && (
+            <button
+              onClick={handlePlaidDisconnect}
+              disabled={isPlaidLoading}
+              className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group disabled:opacity-60"
+              title="Disconnect Plaid sandbox"
+            >
+              <i className="fa-solid fa-link-slash text-slate-400 group-hover:text-amber-400 transition-colors"></i>
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group"

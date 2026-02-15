@@ -354,6 +354,50 @@ export default defineConfig(({ mode }) => {
               return;
             }
 
+            if (req.url?.startsWith('/api/plaid/disconnect')) {
+              if (req.method !== 'POST') {
+                sendJson(res, 405, { error: 'Method not allowed' });
+                return;
+              }
+
+              const session = await authenticateRequest(req);
+              if (!session) {
+                sendJson(res, 401, { error: 'Unauthorized' });
+                return;
+              }
+
+              const client = await getMongoClient();
+              const db = client.db('financial-time-machine');
+              const { ObjectId } = await import('mongodb');
+              const user = await db.collection('users').findOne(
+                { _id: new ObjectId(session.userId) },
+                { projection: { plaidAccessToken: 1 } }
+              );
+
+              if (user?.plaidAccessToken) {
+                try {
+                  const plaidClient = await getPlaidClient();
+                  await plaidClient.itemRemove({ access_token: user.plaidAccessToken });
+                } catch {
+                  // Continue cleanup even if Plaid item is already invalid/missing.
+                }
+              }
+
+              await db.collection('users').updateOne(
+                { _id: new ObjectId(session.userId) },
+                {
+                  $unset: {
+                    plaidAccessToken: '',
+                    plaidItemId: '',
+                    plaidUpdatedAt: ''
+                  }
+                }
+              );
+
+              sendJson(res, 200, { connected: false });
+              return;
+            }
+
             if (!req.url?.startsWith('/api/transactions')) return next();
             if (req.method !== 'GET') {
               sendJson(res, 405, { error: 'Method not allowed' });
