@@ -1,7 +1,6 @@
 {
   "name": "Financial Time Machine",
-  "description": "Travel back in time to alter your financial history and visualize the ripple effects on your present net worth using AI-driven scenario modeling.",
-  "requestFramePermissions": [
-    "camera"
-  ]
+  "description": "Travel back in time to alter your financial history and visualize the ripple effects on your present net worth. Powered by Gemini AI, MongoDB Atlas, and Plaid — with interactive multiverse-style branching timelines built on real bank transaction data.",
+  "tags": ["finance", "ai", "gemini", "mongodb", "plaid", "react", "typescript", "hackathon"],
+  "requestFramePermissions": []
 }

@@ -24,6 +24,7 @@ const ZOOM_LEVELS = [
 
 const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchId, onSelectBranch, onQuickBranch, isProcessing }) => {
   const { isDark } = useTheme();
+  const [viewMode, setViewMode] = useState<'multiverse' | 'time'>('multiverse');
   const [activeNode, setActiveNode] = useState<{ month: string; x: number; y: number; branchId: string; branchCode: string; branchColor: string } | null>(null);
   const [hoveredNode, setHoveredNode] = useState<{ month: string; balance: number; x: number; y: number; branchColor: string } | null>(null);
   const [promptValue, setPromptValue] = useState('');
@@ -157,13 +158,109 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
     setPromptValue('');
   };
 
+  // ── Time Navigator: assign each branch a Y "lane" for flat branching view ──
+  const branchLanes = useMemo(() => {
+    const lanes = new Map<string, number>();
+    // Original always at center
+    const origBranch = branches.find(b => b.isOriginal);
+    if (origBranch) lanes.set(origBranch.id, 0);
+    // Alternate branches fan out above and below
+    const altBranches = branches.filter(b => !b.isOriginal);
+    altBranches.forEach((b, i) => {
+      const side = i % 2 === 0 ? 1 : -1; // alternate above/below
+      const tier = Math.floor(i / 2) + 1;
+      lanes.set(b.id, side * tier);
+    });
+    return lanes;
+  }, [branches]);
+
+  const timePadding = { top: 60, right: 60, bottom: 50, left: 40 };
+  const timeHeight = 350;
+  const timeChartH = timeHeight - timePadding.top - timePadding.bottom;
+  const timeChartW = width - timePadding.left - timePadding.right;
+
+  const getTimeX = (month: string) => {
+    const idx = allMonths.indexOf(month);
+    if (idx < 0) return timePadding.left;
+    return timePadding.left + (idx / Math.max(1, allMonths.length - 1)) * timeChartW;
+  };
+
+  const getTimeY = (laneIdx: number) => {
+    const maxLanes = Math.max(1, ...Array.from(branchLanes.values()).map(Math.abs));
+    const centerY = timePadding.top + timeChartH / 2;
+    const laneSpacing = Math.min(50, timeChartH / (maxLanes * 2 + 1));
+    return centerY + laneIdx * laneSpacing;
+  };
+
+  // Build a Loki-style branching path: horizontal on parent lane, then curves to its own lane
+  const buildTimePath = (branch: TimelineBranch): string => {
+    const lane = branchLanes.get(branch.id) ?? 0;
+    const points = branch.cumulativeBalance.filter(pt => allMonths.includes(pt.month));
+    if (points.length === 0) return '';
+
+    if (branch.isOriginal) {
+      // Straight horizontal line
+      return points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${getTimeX(p.month)} ${getTimeY(0)}`).join(' ');
+    }
+
+    // Find parent lane
+    const parentLane = branchLanes.get(branch.parentId || '') ?? 0;
+    const divIdx = allMonths.indexOf(branch.divergenceMonth);
+    const divX = getTimeX(branch.divergenceMonth);
+    const parentY = getTimeY(parentLane);
+    const branchY = getTimeY(lane);
+
+    // Start at divergence on parent lane, curve to own lane, then go horizontal
+    let d = `M ${divX} ${parentY}`;
+    // Smooth curve to own lane over ~2 month positions
+    const curveEndIdx = Math.min(divIdx + 3, allMonths.length - 1);
+    const curveEndX = getTimeX(allMonths[curveEndIdx]);
+    const cpX = (divX + curveEndX) / 2;
+    d += ` C ${cpX} ${parentY}, ${cpX} ${branchY}, ${curveEndX} ${branchY}`;
+    // Then horizontal to end
+    for (const p of points) {
+      if (p.month <= allMonths[curveEndIdx]) continue;
+      d += ` L ${getTimeX(p.month)} ${branchY}`;
+    }
+    return d;
+  };
+
   return (
     <div ref={containerRef} className={`w-full rounded-2xl p-6 relative min-h-[450px] border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
       {/* Sticky header — stays in place when scrolling horizontally */}
       <div className="sticky left-0 z-10 flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <i className="fa-solid fa-timeline text-blue-400"></i>
-          <span className={`text-sm font-semibold tracking-wider uppercase ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Multiverse Navigator</span>
+        {/* View mode dropdown */}
+        <div className={`flex gap-0.5 p-0.5 rounded-xl border ${isDark ? 'bg-slate-900/60 border-slate-700/50' : 'bg-slate-100 border-slate-200'}`}>
+          <button
+            onClick={() => setViewMode('multiverse')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+              viewMode === 'multiverse'
+                ? isDark
+                  ? 'bg-blue-600/20 text-blue-300 shadow-sm shadow-blue-500/10'
+                  : 'bg-white text-blue-700 shadow-sm'
+                : isDark
+                  ? 'text-slate-500 hover:text-slate-300'
+                  : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <i className="fa-solid fa-chart-line text-[9px]"></i>
+            Multiverse Navigator
+          </button>
+          <button
+            onClick={() => setViewMode('time')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+              viewMode === 'time'
+                ? isDark
+                  ? 'bg-purple-600/20 text-purple-300 shadow-sm shadow-purple-500/10'
+                  : 'bg-white text-purple-700 shadow-sm'
+                : isDark
+                  ? 'text-slate-500 hover:text-slate-300'
+                  : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <i className="fa-solid fa-code-branch text-[9px]"></i>
+            Time Navigator
+          </button>
         </div>
 
         <div className="flex items-center gap-3">
@@ -219,6 +316,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
 
       {/* Scrollable chart area */}
       <div className="overflow-x-auto">
+      {viewMode === 'multiverse' ? (
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="mx-auto">
         {/* Horizontal grid lines */}
         {yTicks.map((v, i) => (
@@ -293,7 +391,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
               {/* Divergence point indicator */}
               {divergenceX !== null && divergenceY !== null && (
                 <g>
-                  <circle cx={divergenceX} cy={divergenceY} r={5} fill={branch.color} stroke="#0f172a" strokeWidth="2" />
+                  <circle cx={divergenceX} cy={divergenceY} r={7} fill={branch.color} stroke="#0f172a" strokeWidth="2.5" />
                   {isSelected && (
                     <g className="opacity-80">
                       <line x1={divergenceX} y1={divergenceY} x2={divergenceX} y2={padding.top} stroke={branch.color} strokeWidth="1" strokeDasharray="3 3" strokeOpacity="0.3" />
@@ -346,7 +444,7 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
                 <g key={nodeKey}>
                   {/* Hover ring — larger invisible target */}
                   <circle
-                    cx={cx} cy={cy} r={12}
+                    cx={cx} cy={cy} r={16}
                     fill="transparent"
                     className="cursor-pointer"
                     onClick={(e) => { e.stopPropagation(); handleNodeClick(pt.month, branch, e as unknown as React.MouseEvent<SVGCircleElement>); }}
@@ -356,10 +454,10 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
                   {/* Visible dot */}
                   <circle
                     cx={cx} cy={cy}
-                    r={isActive ? 5 : isHovered ? 4.5 : isSelectedBranch ? 3 : 2}
+                    r={isActive ? 7 : isHovered ? 6 : isSelectedBranch ? 4.5 : 3.5}
                     fill={isActive ? dotColor : isHovered ? dotColor : '#1e293b'}
                     stroke={isActive || isHovered ? dotColor : '#475569'}
-                    strokeWidth={isActive || isHovered ? 2 : 1}
+                    strokeWidth={isActive || isHovered ? 2.5 : 1.5}
                     className="cursor-pointer"
                     opacity={isSelectedBranch || isActive || isHovered ? 1 : 0.5}
                     style={{ filter: isActive ? `drop-shadow(0 0 4px ${dotColor})` : isHovered ? `drop-shadow(0 0 3px ${dotColor})` : 'none', transition: 'all 0.15s ease' }}
@@ -392,6 +490,180 @@ const TimelineGraph: React.FC<TimelineGraphProps> = ({ branches, selectedBranchI
             });
         })}
       </svg>
+      ) : (
+      /* ════════════ TIME NAVIGATOR — Loki-style flat branching ════════════ */
+      <svg width={width} height={timeHeight} viewBox={`0 0 ${width} ${timeHeight}`} className="mx-auto">
+        {/* Central timeline axis — glowing line */}
+        <line
+          x1={timePadding.left} y1={getTimeY(0)}
+          x2={width - timePadding.right} y2={getTimeY(0)}
+          stroke={isDark ? '#1e293b' : '#e2e8f0'} strokeWidth="1" strokeDasharray="6 4"
+        />
+
+        {/* X-axis month labels along center */}
+        {allMonths.map((m, i) => {
+          if (i % xLabelInterval !== 0 && i !== allMonths.length - 1) return null;
+          const x = getTimeX(m);
+          return (
+            <g key={m}>
+              <text x={x} y={timeHeight - timePadding.bottom + 16} textAnchor="middle" fontSize="9" fill={isDark ? '#64748b' : '#94a3b8'} className="font-heading">
+                {formatMonthLabel(m)}
+              </text>
+              <line x1={x} y1={timeHeight - timePadding.bottom + 2} x2={x} y2={timeHeight - timePadding.bottom + 6} stroke={isDark ? '#334155' : '#cbd5e1'} strokeWidth="1" />
+            </g>
+          );
+        })}
+
+        {/* Branch paths */}
+        {branches.map(branch => {
+          const isSelected = selectedBranchId === branch.id;
+          const path = buildTimePath(branch);
+          if (!path) return null;
+          const lane = branchLanes.get(branch.id) ?? 0;
+
+          // Divergence marker
+          const divX = !branch.isOriginal ? getTimeX(branch.divergenceMonth) : null;
+          const parentLane = branchLanes.get(branch.parentId || '') ?? 0;
+          const divY = divX !== null ? getTimeY(parentLane) : null;
+
+          // End point
+          const lastPt = branch.cumulativeBalance.filter(p => allMonths.includes(p.month));
+          const lastMonth = lastPt.length > 0 ? lastPt[lastPt.length - 1] : null;
+
+          return (
+            <g key={branch.id} onClick={() => onSelectBranch(branch.id)} className="cursor-pointer">
+              {/* Glow */}
+              {isSelected && (
+                <path d={path} fill="none" stroke={branch.color} strokeWidth={8} strokeOpacity={0.12} className="blur-sm" />
+              )}
+              <path
+                d={path}
+                fill="none"
+                stroke={branch.color}
+                strokeWidth={isSelected ? 3 : 1.8}
+                strokeOpacity={isSelected ? 1 : 0.4}
+                className="transition-all duration-500"
+              />
+
+              {/* Divergence node */}
+              {divX !== null && divY !== null && (
+                <g>
+                  <circle cx={divX} cy={divY} r={7} fill={branch.color} stroke={isDark ? '#0f172a' : '#ffffff'} strokeWidth="2.5" />
+                  {isSelected && (
+                    <g className="opacity-90">
+                      <rect x={divX - 30} y={divY - 22} width={60} height={16} rx={4} fill={isDark ? '#0f172a' : '#ffffff'} stroke={branch.color} strokeWidth="0.5" />
+                      <text x={divX} y={divY - 10} textAnchor="middle" fontSize="8" fill={branch.color} className="font-mono font-bold">
+                        {formatMonthLabel(branch.divergenceMonth)}
+                      </text>
+                    </g>
+                  )}
+                </g>
+              )}
+
+              {/* End-of-line branch name label */}
+              {lastMonth && isSelected && (
+                <g>
+                  <rect
+                    x={getTimeX(lastMonth.month) + 4} y={getTimeY(lane) - 10}
+                    width={Math.max(60, branch.name.length * 5.5 + 16)} height={20} rx={4}
+                    fill={isDark ? '#0f172a' : '#ffffff'} stroke={branch.color} strokeWidth="0.5"
+                  />
+                  <text
+                    x={getTimeX(lastMonth.month) + 12} y={getTimeY(lane) + 4}
+                    fontSize="8" fill={branch.color} className="font-mono font-bold"
+                  >
+                    {branch.name}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Interactive dots on Time Navigator */}
+        {branches.map(branch => {
+          const isSelectedBranch = selectedBranchId === branch.id;
+          const lane = branchLanes.get(branch.id) ?? 0;
+          const parentLane = branchLanes.get(branch.parentId || '') ?? 0;
+          return branch.cumulativeBalance
+            .filter(pt => allMonths.includes(pt.month))
+            .map((pt) => {
+              const monthIdx = allMonths.indexOf(pt.month);
+              if (monthIdx < 0 || monthIdx % nodeInterval !== 0) return null;
+              if (!branch.isOriginal && pt.month < branch.divergenceMonth) return null;
+
+              // Figure out Y position — during the curve phase or on the lane
+              let cy: number;
+              if (branch.isOriginal) {
+                cy = getTimeY(0);
+              } else {
+                const divIdx = allMonths.indexOf(branch.divergenceMonth);
+                const curveEndIdx = Math.min(divIdx + 3, allMonths.length - 1);
+                if (monthIdx <= divIdx) {
+                  cy = getTimeY(parentLane);
+                } else if (monthIdx <= curveEndIdx) {
+                  // Interpolate during curve
+                  const t = (monthIdx - divIdx) / (curveEndIdx - divIdx);
+                  cy = getTimeY(parentLane) + (getTimeY(lane) - getTimeY(parentLane)) * t;
+                } else {
+                  cy = getTimeY(lane);
+                }
+              }
+
+              const cx = getTimeX(pt.month);
+              const nodeKey = `time-${branch.id}-${pt.month}`;
+              const isActive = activeNode?.branchId === branch.id && activeNode?.month === pt.month;
+              const isHovered = hoveredNode?.month === pt.month && Math.abs((hoveredNode?.x ?? 0) - cx) < 1 && Math.abs((hoveredNode?.y ?? 0) - cy) < 1;
+              const dotColor = branch.color;
+
+              return (
+                <g key={nodeKey}>
+                  <circle
+                    cx={cx} cy={cy} r={16}
+                    fill="transparent" className="cursor-pointer"
+                    onClick={(e) => { e.stopPropagation(); handleNodeClick(pt.month, branch, e as unknown as React.MouseEvent<SVGCircleElement>); }}
+                    onMouseEnter={() => setHoveredNode({ month: pt.month, balance: pt.balance, x: cx, y: cy, branchColor: dotColor })}
+                    onMouseLeave={() => setHoveredNode(null)}
+                  />
+                  <circle
+                    cx={cx} cy={cy}
+                    r={isActive ? 7 : isHovered ? 6 : isSelectedBranch ? 4.5 : 3.5}
+                    fill={isActive ? dotColor : isHovered ? dotColor : isDark ? '#1e293b' : '#f1f5f9'}
+                    stroke={isActive || isHovered ? dotColor : isDark ? '#475569' : '#94a3b8'}
+                    strokeWidth={isActive || isHovered ? 2.5 : 1.5}
+                    className="cursor-pointer"
+                    opacity={isSelectedBranch || isActive || isHovered ? 1 : 0.5}
+                    style={{ filter: isActive ? `drop-shadow(0 0 6px ${dotColor})` : isHovered ? `drop-shadow(0 0 4px ${dotColor})` : 'none', transition: 'all 0.15s ease' }}
+                    onClick={(e) => { e.stopPropagation(); handleNodeClick(pt.month, branch, e as unknown as React.MouseEvent<SVGCircleElement>); }}
+                    onMouseEnter={() => setHoveredNode({ month: pt.month, balance: pt.balance, x: cx, y: cy, branchColor: dotColor })}
+                    onMouseLeave={() => setHoveredNode(null)}
+                  />
+                  {/* Hover tooltip — shows branch info + balance */}
+                  {isHovered && !isActive && (
+                    <g>
+                      <rect
+                        x={cx - 55} y={cy - 48}
+                        width={110} height={38} rx={6}
+                        fill={isDark ? '#0f172a' : '#ffffff'} fillOpacity="0.95"
+                        stroke={dotColor} strokeWidth="0.5"
+                      />
+                      <text x={cx} y={cy - 34} textAnchor="middle" fontSize="8" fill={dotColor} className="font-mono font-bold">
+                        Branch {branch.hierarchyCode}
+                      </text>
+                      <text x={cx} y={cy - 24} textAnchor="middle" fontSize="9" fill="#94a3b8" className="font-mono">
+                        {formatMonthLabel(pt.month)}
+                      </text>
+                      <text x={cx} y={cy - 14} textAnchor="middle" fontSize="10" fill={isDark ? '#e2e8f0' : '#1e293b'} className="font-mono font-bold">
+                        {formatCurrency(pt.balance)}
+                      </text>
+                    </g>
+                  )}
+                </g>
+              );
+            });
+        })}
+      </svg>
+      )}
 
       {/* Inline prompt popup */}
       {activeNode && (
