@@ -1,141 +1,20 @@
 
 import React, { useEffect, useState } from 'react';
 import { TimelineBranch, ChatMessage, FinancialEvent } from './types';
-import { MOCK_ORIGINAL_BRANCH, START_YEAR, CURRENT_YEAR } from './constants';
+import { MOCK_ORIGINAL_BRANCH, CURRENT_MONTH, START_MONTH, formatMonthLabel, BRANCH_COLORS } from './constants';
 import TimelineGraph from './components/TimelineGraph';
 import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
+import ProfilePage from './components/ProfilePage';
+import LokiLogo from './components/LokiLogo';
+import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 import { generateScenario } from './services/geminiService';
-import { formatCurrency } from './services/financeUtils';
-import { usePlaidLink } from 'react-plaid-link';
+import { formatCurrency, buildCumulativeBalance, applyWhatIfDelta } from './services/financeUtils';
 
-const parseAmountFromPrompt = (text: string): number | null => {
-  const matches = [...text.matchAll(/\$?\s*(\d+(?:\.\d+)?)\s*([kKmM])?/g)];
-  if (matches.length === 0) return null;
-  const amounts = matches
-    .map(match => {
-      const base = parseFloat(match[1]);
-      if (!Number.isFinite(base)) return null;
-      const suffix = (match[2] || '').toLowerCase();
-      const raw = Math.round(base);
-      const value = suffix === 'k'
-        ? Math.round(base * 1_000)
-        : suffix === 'm'
-          ? Math.round(base * 1_000_000)
-          : raw;
-      const start = Math.max(0, (match.index || 0) - 18);
-      const end = Math.min(text.length, (match.index || 0) + match[0].length + 18);
-      const context = text.slice(start, end).toLowerCase();
-      const hasCurrencyToken = match[0].includes('$') || suffix === 'k' || suffix === 'm';
-      const hasMoneyWord = /\b(worth|for|invest|investing|amount|cost|price|priced|value|spend|spent)\b/.test(context);
-      const hasMoneySignal = hasCurrencyToken || hasMoneyWord;
-      const looksLikeYear = value >= 1900 && value <= CURRENT_YEAR + 1 && suffix === '' && !hasMoneySignal;
-      if (looksLikeYear) return null;
-      if (value <= 0) return null;
-      return value;
-    })
-    .filter((value): value is number => value !== null);
-  if (amounts.length === 0) return null;
-  return Math.max(...amounts);
-};
-
-const parseAbsoluteYearFromPrompt = (text: string): number | null => {
-  const matches = [...text.matchAll(/\b(19\d{2}|20\d{2})\b/g)];
-  if (matches.length === 0) return null;
-  const years = matches
-    .map(m => Number(m[1]))
-    .filter(y => Number.isFinite(y) && y >= START_YEAR && y <= CURRENT_YEAR);
-  if (years.length === 0) return null;
-  return Math.max(...years);
-};
-
-const parseYearsAgoFromPrompt = (text: string): number | null => {
-  const lower = text.toLowerCase();
-
-  const numericMatch = lower.match(/(\d+)\s*(?:years?|yrs?)\s+ago/);
-  if (numericMatch) {
-    const years = Number(numericMatch[1]);
-    if (Number.isFinite(years) && years >= 0) return years;
-  }
-
-  if (/\b(a|one)\s+year\s+ago\b/.test(lower) || /\blast year\b/.test(lower)) return 1;
-  if (/\bthis year\b/.test(lower)) return 0;
-
-  const wordToNumber: Record<string, number> = {
-    one: 1,
-    two: 2,
-    three: 3,
-    four: 4,
-    five: 5,
-    six: 6,
-    seven: 7,
-    eight: 8,
-    nine: 9,
-    ten: 10
-  };
-  const wordMatch = lower.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+years?\s+ago\b/);
-  if (wordMatch) return wordToNumber[wordMatch[1]] ?? null;
-
-  return null;
-};
-
-const extractAssetNameFromPrompt = (text: string): string | null => {
-  const lower = text.toLowerCase();
-  const assetRegexes = [
-    /\b(car|vehicle|auto|suv|sedan|truck)\b/,
-    /\b(bitcoin|btc|crypto|ethereum|eth)\b/,
-    /\b(stock|stocks|etf|index fund|mutual fund|bond|bonds)\b/,
-    /\b(gold|silver|real estate|property|house|apartment)\b/,
-    /\b(laptop|phone)\b/
-  ];
-  for (const re of assetRegexes) {
-    const match = lower.match(re);
-    if (match) return match[1];
-  }
-  return null;
-};
-
-const parseBranchCodeFromPrompt = (text: string): string | null => {
-  const branchMatch = text.match(/\b(?:from|on|using)?\s*branch\s*#?\s*([0-9]+(?:\.[0-9]+)*)\b/i);
-  if (branchMatch) return branchMatch[1];
-  return null;
-};
+// ── Helpers ──
 
 const hasKeyword = (value: string | undefined, keyword: string): boolean => {
   return (value || '').toLowerCase().includes(keyword);
-};
-
-const isFinancialAssetText = (label: string | undefined, description: string | undefined): boolean => {
-  const text = `${label || ''} ${description || ''}`.toLowerCase();
-  return /crypto|bitcoin|btc|ethereum|eth|stock|stocks|etf|index fund|mutual fund|equity|401k|retirement|ira|pension/.test(text);
-};
-
-const getTransactionValidationError = (text: string, branches: TimelineBranch[]): string | null => {
-  const lower = text.toLowerCase();
-  const isTransactionIntent = /\b(buy|bought|purchase|purchased|invest|invested|put|allocate|acquire|get)\b/.test(lower);
-  if (!isTransactionIntent) return null;
-
-  const hasYear = parseYearsAgoFromPrompt(text) !== null || parseAbsoluteYearFromPrompt(text) !== null;
-  const hasAmount = parseAmountFromPrompt(text) !== null;
-  const hasAsset = extractAssetNameFromPrompt(text) !== null;
-  const branchCode = parseBranchCodeFromPrompt(text);
-  const hasBranchReference = branchCode !== null;
-  const hasValidBranch = branchCode ? branches.some(b => b.hierarchyCode === branchCode) : false;
-  const availableCodes = branches.map(b => b.hierarchyCode).join(', ');
-
-  const missing: string[] = [];
-  if (!hasYear) missing.push('year');
-  if (!hasAsset) missing.push('asset name');
-  if (!hasAmount) missing.push('amount');
-  if (!hasBranchReference) missing.push('branch to branch from (e.g. "branch 1" or "branch 1.2")');
-  if (missing.length > 0) {
-    return `I need ${missing.join(', ')} to run this simulation. Please include all required details. Example: "From branch 1, buy a car for $20k 3 years ago." Available branches: ${availableCodes}.`;
-  }
-  if (!hasValidBranch) {
-    return `I couldn't find branch "${branchCode}" in your timeline. Please reference an existing branch code. Available branches: ${availableCodes}.`;
-  }
-
-  return null;
 };
 
 type AtlasTransaction = {
@@ -155,7 +34,7 @@ type SessionUser = {
 };
 
 const mapTransactionType = (tx: AtlasTransaction): FinancialEvent['type'] => {
-  if (hasKeyword(tx.category, 'income')) return 'income';
+  if (hasKeyword(tx.category, 'income') || hasKeyword(tx.category, 'salary')) return 'income';
   if (hasKeyword(tx.intent, 'investment')) return 'investment';
   if (hasKeyword(tx.intent, 'liability')) return 'expense';
 
@@ -165,20 +44,23 @@ const mapTransactionType = (tx: AtlasTransaction): FinancialEvent['type'] => {
   return Number(tx.amount ?? 0) < 0 ? 'expense' : 'income';
 };
 
+/** Convert a transaction date "YYYY-MM-DD" → "YYYY-MM" */
+const toMonth = (dateStr: string | undefined): string => {
+  if (!dateStr) return CURRENT_MONTH;
+  const parts = dateStr.split('-');
+  if (parts.length >= 2) return `${parts[0]}-${parts[1]}`;
+  return CURRENT_MONTH;
+};
+
 const mapTransactionToFinancialEvent = (tx: AtlasTransaction, index: number): FinancialEvent => {
   const parsedAmount = Number(tx.amount);
   const safeAmount = Number.isFinite(parsedAmount) ? Math.abs(parsedAmount) : 0;
-
-  const parsedDate = tx.date ? new Date(tx.date) : null;
-  const year = parsedDate && Number.isFinite(parsedDate.getTime())
-    ? parsedDate.getUTCFullYear()
-    : CURRENT_YEAR;
-
+  const month = toMonth(tx.date);
   const label = (tx.merchant || '').trim() || (tx.category || '').trim() || `Transaction ${index + 1}`;
   const descriptionParts = [tx.category, tx.intent, tx.accountId].filter(Boolean);
 
   return {
-    year: Math.min(CURRENT_YEAR, Math.max(START_YEAR, year)),
+    month,
     label,
     amount: safeAmount,
     type: mapTransactionType(tx),
@@ -186,32 +68,53 @@ const mapTransactionToFinancialEvent = (tx: AtlasTransaction, index: number): Fi
   };
 };
 
-const getCashImpact = (event: FinancialEvent): number => {
-  if (event.type === 'income') return event.amount;
-  // expense and investment reduce liquid cash
-  return -event.amount;
-};
-
 const buildOriginalBranchFromTransactions = (transactions: AtlasTransaction[]): TimelineBranch => {
   const events = transactions
     .map(mapTransactionToFinancialEvent)
     .filter(event => event.amount > 0)
-    .sort((a, b) => a.year - b.year);
+    .sort((a, b) => a.month.localeCompare(b.month));
 
   if (events.length === 0) return MOCK_ORIGINAL_BRANCH;
 
-  const divergenceYear = Math.min(...events.map(e => e.year));
-  const calculatedNetWorth = Math.round(events.reduce((sum, event) => sum + getCashImpact(event), 0));
+  const firstMonth = events[0].month;
+  const cumulativeBalance = buildCumulativeBalance(events, firstMonth);
+  const calculatedNetWorth = cumulativeBalance.length > 0
+    ? cumulativeBalance[cumulativeBalance.length - 1].balance
+    : 0;
 
   return {
     ...MOCK_ORIGINAL_BRANCH,
     events,
-    divergenceYear,
-    calculatedNetWorth
+    cumulativeBalance,
+    calculatedNetWorth,
+    divergenceMonth: firstMonth,
+    scenarioAssets: []
   };
 };
 
-const App: React.FC = () => {
+/** Build a spending summary string for the AI prompt from user's transactions */
+const buildSpendingSummary = (events: FinancialEvent[]): string => {
+  const categoryTotals = new Map<string, { total: number; count: number }>();
+  for (const e of events) {
+    if (e.type !== 'expense') continue;
+    const cat = e.description.split(' | ')[0] || e.label;
+    const existing = categoryTotals.get(cat) || { total: 0, count: 0 };
+    existing.total += e.amount;
+    existing.count += 1;
+    categoryTotals.set(cat, existing);
+  }
+
+  const lines: string[] = [];
+  for (const [cat, data] of categoryTotals) {
+    const avgMonthly = Math.round(data.total / Math.max(1, data.count));
+    lines.push(`${cat}: ${data.count} transactions, total $${Math.round(data.total)}, avg $${avgMonthly}/occurrence`);
+  }
+  return lines.join('\n');
+};
+
+const AppInner: React.FC = () => {
+  const { isDark, toggleTheme } = useTheme();
+  const [showProfile, setShowProfile] = useState(false);
   const [branches, setBranches] = useState<TimelineBranch[]>([MOCK_ORIGINAL_BRANCH]);
   const [selectedBranchId, setSelectedBranchId] = useState<string>(MOCK_ORIGINAL_BRANCH.id);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
@@ -222,22 +125,17 @@ const App: React.FC = () => {
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
-  const [isPlaidConnected, setIsPlaidConnected] = useState(false);
-  const [isPlaidLoading, setIsPlaidLoading] = useState(false);
-  const [plaidError, setPlaidError] = useState<string | null>(null);
-
   const [isLoadingAtlas, setIsLoadingAtlas] = useState(true);
   const [atlasLoadError, setAtlasLoadError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: "Welcome, Traveler. I am your Temporal Architect. I've mapped your Prime Timeline. You can now branch from ANY point in your history. Try clicking an event on the timeline or telling me what you'd change. I will use historical market data to simulate the outcome.",
-      timestamp: new Date()
-    }
-  ]);
+  const makeWelcomeMessage = (): ChatMessage[] => [{
+    id: '1',
+    role: 'assistant',
+    content: "Welcome, Traveler. I am your Temporal Architect. I've mapped your Prime Timeline from your real bank transactions. You can now go back to any month and ask: \"What if I had stopped spending on coffee?\" or \"What if I had invested in NVIDIA?\" I'll show you how it would have changed your balance today.",
+    timestamp: new Date()
+  }];
+
+  const [messages, setMessages] = useState<ChatMessage[]>(makeWelcomeMessage());
 
   useEffect(() => {
     let alive = true;
@@ -263,125 +161,8 @@ const App: React.FC = () => {
     };
 
     bootstrapSession();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
-
-  useEffect(() => {
-    let alive = true;
-
-    const initializePlaid = async () => {
-      if (!sessionUser) {
-        setPlaidLinkToken(null);
-        setIsPlaidConnected(false);
-        setPlaidError(null);
-        return;
-      }
-
-      setIsPlaidLoading(true);
-      setPlaidError(null);
-
-      try {
-        const [statusResponse, tokenResponse] = await Promise.all([
-          fetch('/api/plaid/status'),
-          fetch('/api/plaid/create_link_token', { method: 'POST' })
-        ]);
-
-        if (!statusResponse.ok) {
-          const statusPayload = await statusResponse.json().catch(() => ({}));
-          throw new Error(statusPayload?.error || `Plaid status failed (${statusResponse.status})`);
-        }
-
-        if (!tokenResponse.ok) {
-          const tokenPayload = await tokenResponse.json().catch(() => ({}));
-          throw new Error(tokenPayload?.error || `Plaid link token failed (${tokenResponse.status})`);
-        }
-
-        const statusPayload: { connected?: boolean } = await statusResponse.json();
-        const tokenPayload: { link_token?: string } = await tokenResponse.json();
-
-        if (!alive) return;
-        setIsPlaidConnected(Boolean(statusPayload.connected));
-        setPlaidLinkToken(tokenPayload.link_token || null);
-      } catch (error: any) {
-        if (!alive) return;
-        setPlaidError(error?.message || 'Unable to initialize Plaid');
-      } finally {
-        if (!alive) return;
-        setIsPlaidLoading(false);
-      }
-    };
-
-    initializePlaid();
-    return () => {
-      alive = false;
-    };
-  }, [sessionUser]);
-
-  const { open: openPlaidLink, ready: isPlaidReady } = usePlaidLink({
-    token: plaidLinkToken,
-    onSuccess: async (publicToken) => {
-      setPlaidError(null);
-      setIsPlaidLoading(true);
-      try {
-        const response = await fetch('/api/plaid/exchange_public_token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ public_token: publicToken })
-        });
-
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          throw new Error(payload?.error || 'Plaid token exchange failed');
-        }
-
-        setIsPlaidConnected(true);
-      } catch (error: any) {
-        setPlaidError(error?.message || 'Failed to complete Plaid connection');
-      } finally {
-        setIsPlaidLoading(false);
-      }
-    },
-    onExit: (error) => {
-      if (error?.display_message || error?.error_message) {
-        setPlaidError(error.display_message || error.error_message || 'Plaid Link exited with an error');
-      }
-    }
-  });
-
-  const handlePlaidConnect = () => {
-    if (!isPlaidReady || !plaidLinkToken) {
-      setPlaidError('Plaid Link is not ready yet');
-      return;
-    }
-    openPlaidLink();
-  };
-
-  const handlePlaidDisconnect = async () => {
-    setPlaidError(null);
-    setIsPlaidLoading(true);
-    try {
-      const response = await fetch('/api/plaid/disconnect', { method: 'POST' });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload?.error || 'Unable to disconnect Plaid');
-      }
-
-      setIsPlaidConnected(false);
-
-      // Prepare a fresh link token for reconnect.
-      const tokenResponse = await fetch('/api/plaid/create_link_token', { method: 'POST' });
-      if (tokenResponse.ok) {
-        const tokenPayload: { link_token?: string } = await tokenResponse.json();
-        setPlaidLinkToken(tokenPayload.link_token || null);
-      }
-    } catch (error: any) {
-      setPlaidError(error?.message || 'Unable to disconnect Plaid');
-    } finally {
-      setIsPlaidLoading(false);
-    }
-  };
 
   const handleAuthSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -418,11 +199,9 @@ const App: React.FC = () => {
       await fetch('/api/auth/logout', { method: 'POST' });
     } finally {
       setSessionUser(null);
-      setPlaidLinkToken(null);
-      setIsPlaidConnected(false);
-      setPlaidError(null);
       setBranches([MOCK_ORIGINAL_BRANCH]);
       setSelectedBranchId(MOCK_ORIGINAL_BRANCH.id);
+      setMessages(makeWelcomeMessage());
     }
   };
 
@@ -435,6 +214,7 @@ const App: React.FC = () => {
         setAtlasLoadError(null);
         setBranches([MOCK_ORIGINAL_BRANCH]);
         setSelectedBranchId(MOCK_ORIGINAL_BRANCH.id);
+        setMessages(makeWelcomeMessage());
         return;
       }
 
@@ -482,107 +262,137 @@ const App: React.FC = () => {
     return `${parentBranch.hierarchyCode}.${siblingCount + 1}`;
   };
 
-  const createBranch = async (content: string, overrideYear?: number, fromBranchId?: string) => {
-    const parentId = fromBranchId || selectedBranchId;
-    const parentBranch = branches.find(b => b.id === parentId) || MOCK_ORIGINAL_BRANCH;
-    const yearsAgo = parseYearsAgoFromPrompt(content);
-    const inferredYear = yearsAgo !== null ? CURRENT_YEAR - yearsAgo : null;
-    const interpretedDivergenceYear = overrideYear || inferredYear || undefined;
-    
+  const createBranch = async (content: string, parentBranchId?: string) => {
+    const parentBranch = (parentBranchId && branches.find(b => b.id === parentBranchId)) || originalBranch;
     setIsProcessing(true);
 
-    // Build context for AI
-    const contextStr = `Current Timeline context (Branch ${parentBranch.hierarchyCode}: ${parentBranch.name}):
-    Current Year: ${CURRENT_YEAR}
-    Events: ${parentBranch.events.map(e => `${e.year}: ${e.label} ($${e.amount})`).join(', ')}
-    ${interpretedDivergenceYear !== undefined ? `Interpreted divergence year from user language: ${interpretedDivergenceYear}` : ''}
-    ${overrideYear ? `Target Year to change: ${overrideYear}` : ''}
-    User Request: ${content}`;
+    // Build context for AI with real spending data
+    const spendingSummary = buildSpendingSummary(parentBranch.events);
+    const contextStr = `User's real transaction data summary (from ${parentBranch.events.length} transactions, ${parentBranch.divergenceMonth} to ${CURRENT_MONTH}):
+Spending by category:
+${spendingSummary}
+
+Current cumulative balance: ${formatCurrency(parentBranch.calculatedNetWorth)}
+Current month: ${CURRENT_MONTH}
+
+User Request: ${content}`;
 
     try {
       const scenario = await generateScenario(contextStr);
       const newBranchId = `alt-${Date.now()}`;
       const hierarchyCode = getNextHierarchyCode(parentBranch);
-      
-      const divergenceYear = overrideYear || inferredYear || scenario.divergenceYear;
-      const validTypes: FinancialEvent['type'][] = ['income', 'expense', 'investment'];
-      const safeScenarioEvents = Array.isArray(scenario.newEvents) ? scenario.newEvents : [];
-      const safeScenarioMarketTrends = Array.isArray(scenario.marketTrends) ? scenario.marketTrends : [];
-      const aiDivergenceEvents = safeScenarioEvents
-        .filter(e => validTypes.includes(e.type as FinancialEvent['type']))
-        .filter(e => e.year >= START_YEAR && e.year <= CURRENT_YEAR)
-        .filter(e => e.year === divergenceYear)
-        .map(e => ({
-          ...e,
-          type: ((e.type as FinancialEvent['type']) === 'expense' && isFinancialAssetText(e.label, e.description))
-            ? 'investment'
-            : (e.type as FinancialEvent['type']),
-          amount: Math.abs(Number.isFinite(e.amount) ? e.amount : 0)
-        }));
-      const sanitizedNewEvents = aiDivergenceEvents;
 
-      // Preserve parent timeline and only replace what AI explicitly changes (same year+type).
-      const historicalEvents = parentBranch.events.filter(e => e.year < divergenceYear);
-      const newEventKeys = new Set(sanitizedNewEvents.map(e => `${e.year}-${e.type}`));
-      const parentDivergenceEvents = parentBranch.events.filter(e => e.year === divergenceYear);
-      const preservedDivergenceEvents = parentDivergenceEvents.filter(e => !newEventKeys.has(`${e.year}-${e.type}`));
-      const parentFutureEvents = parentBranch.events.filter(e => e.year > divergenceYear);
-      const preservedFutureEvents = parentFutureEvents.filter(e => !newEventKeys.has(`${e.year}-${e.type}`));
+      // ── Build scenario assets from what-if results ──
+      // Inherit parent's scenario assets and add any new ones from this scenario
+      const inheritedAssets = [...(parentBranch.scenarioAssets || [])];
+      const newScenarioAssets: typeof inheritedAssets = [];
 
-      const combinedEvents = [
-        ...historicalEvents,
-        ...preservedDivergenceEvents,
-        ...sanitizedNewEvents,
-        ...preservedFutureEvents
-      ].sort((a, b) => a.year - b.year);
-
-      // Cash delta rules:
-      // income adds cash; expense/investment/liability reduce cash.
-      const getSignedEffect = (event: FinancialEvent): number => {
-        return getCashImpact(event);
+      // Classify asset category from name
+      const classifyAsset = (name: string): 'real_estate' | 'vehicle' | 'investment' | 'other' => {
+        const lower = name.toLowerCase();
+        if (/home|house|condo|apartment|property|real estate|land|duplex|townhouse/i.test(lower)) return 'real_estate';
+        if (/car|truck|boat|motorcycle|rv|suv|vehicle|tesla|bmw|toyota|honda/i.test(lower)) return 'vehicle';
+        if (/stock|share|nvidia|bitcoin|btc|eth|crypto|fund|etf|bond|reit|index/i.test(lower)) return 'investment';
+        return 'other';
       };
 
-      const aggregateEffectsByYearType = (events: FinancialEvent[]): Map<string, number> => {
-        const totals = new Map<string, number>();
-        for (const event of events) {
-          if (event.year < divergenceYear) continue;
-          const key = `${event.year}-${event.type}`;
-          const prev = totals.get(key) || 0;
-          totals.set(key, prev + getSignedEffect(event));
-        }
-        return totals;
-      };
-
-      const parentEffects = aggregateEffectsByYearType(parentBranch.events);
-      const branchEffects = aggregateEffectsByYearType(combinedEvents);
-      const effectKeys = new Set([...parentEffects.keys(), ...branchEffects.keys()]);
-      let deltaFromParent = 0;
-      for (const key of effectKeys) {
-        deltaFromParent += (branchEffects.get(key) || 0) - (parentEffects.get(key) || 0);
+      if (scenario.assetPurchase) {
+        const ap = scenario.assetPurchase;
+        newScenarioAssets.push({
+          asset: ap.asset,
+          purchasePrice: ap.purchasePrice,
+          currentValue: ap.currentValue,
+          annualGrowthRate: ap.annualDepreciation, // negative = depreciating, positive = appreciating
+          monthlyExpenses: ap.monthlyExpenses,
+          purchaseMonth: scenario.divergenceMonth,
+          category: classifyAsset(ap.asset)
+        });
       }
 
-      const newWorth = Math.round(parentBranch.calculatedNetWorth + deltaFromParent);
+      if (scenario.addedInvestment) {
+        const inv = scenario.addedInvestment;
+        const currentValue = Math.round((inv.priceNow / inv.priceAtEntry) * inv.amountInvested);
+        newScenarioAssets.push({
+          asset: inv.asset,
+          purchasePrice: inv.amountInvested,
+          currentValue,
+          annualGrowthRate: inv.priceNow > inv.priceAtEntry ? 0.10 : -0.05, // rough estimate
+          monthlyExpenses: 0,
+          purchaseMonth: scenario.divergenceMonth,
+          category: classifyAsset(inv.asset)
+        });
+      }
+
+      const allScenarioAssets = [...inheritedAssets, ...newScenarioAssets];
+
+      // Build the alternate timeline cash balance
+      // For asset purchases: cash outflow = purchase price, monthly costs reduce cash
+      // For investments: cash outflow = amount invested, monthly costs = 0
+      // The asset/investment VALUE is tracked separately in scenarioAssets
+      // Pattern D (one-time expenses): no assetPurchase or addedInvestment, use totalImpact directly
+      const lumpSumDelta = scenario.assetPurchase
+        ? -scenario.assetPurchase.purchasePrice   // cash outflow for purchase
+        : scenario.addedInvestment
+          ? -scenario.addedInvestment.amountInvested  // cash outflow for investment
+          : scenario.removedSpending
+            ? 0  // recurring savings handled via monthlyImpact
+            : scenario.totalImpact;  // one-time expense (Pattern D) — totalImpact is negative
+
+      const altBalance = applyWhatIfDelta(
+        parentBranch.cumulativeBalance,
+        scenario.divergenceMonth,
+        scenario.monthlyImpact,
+        lumpSumDelta
+      );
+
+      const altCashBalance = altBalance.length > 0
+        ? altBalance[altBalance.length - 1].balance
+        : parentBranch.calculatedNetWorth + scenario.totalImpact;
 
       const newBranch: TimelineBranch = {
         id: newBranchId,
-        parentId: parentId,
+        parentId: parentBranch.id,
         hierarchyCode,
         name: scenario.branchName,
-        color: `hsl(${Math.random() * 360}, 75%, 65%)`,
+        color: BRANCH_COLORS[(branches.length - 1) % BRANCH_COLORS.length],
         isOriginal: false,
-        events: combinedEvents,
-        marketTrends: safeScenarioMarketTrends,
-        calculatedNetWorth: newWorth,
-        divergenceYear: divergenceYear
+        events: parentBranch.events, // same events as parent
+        marketTrends: [],
+        cumulativeBalance: altBalance,
+        calculatedNetWorth: altCashBalance,
+        divergenceMonth: scenario.divergenceMonth,
+        scenarioAssets: allScenarioAssets
       };
 
       setBranches(prev => [...prev, newBranch]);
       setSelectedBranchId(newBranchId);
 
+      // Compute full net worth: cash + scenario asset values + investment portfolio
+      const scenarioAssetValue = allScenarioAssets.reduce((sum, a) => sum + a.currentValue, 0);
+      const fullNetWorth = altCashBalance + scenarioAssetValue;
+      const parentScenarioAssetValue = (parentBranch.scenarioAssets || []).reduce((sum, a) => sum + a.currentValue, 0);
+      const parentFullNetWorth = parentBranch.calculatedNetWorth + parentScenarioAssetValue;
+      const difference = fullNetWorth - parentFullNetWorth;
+      const diffStr = difference >= 0 ? `+${formatCurrency(difference)}` : formatCurrency(difference);
+
+      let detailStr = '';
+      if (scenario.removedSpending) {
+        detailStr = `By eliminating ${scenario.removedSpending.category} spending (~${formatCurrency(scenario.removedSpending.monthlyAmount)}/mo), you'd save ${formatCurrency(scenario.totalImpact)} total.`;
+      } else if (scenario.addedInvestment) {
+        const inv = scenario.addedInvestment;
+        const investmentCurrentValue = Math.round((inv.priceNow / inv.priceAtEntry) * inv.amountInvested);
+        detailStr = `A ${formatCurrency(inv.amountInvested)} investment in ${inv.asset} at $${inv.priceAtEntry.toLocaleString()}/share would be worth ${formatCurrency(investmentCurrentValue)} today at $${inv.priceNow.toLocaleString()}/share. This adds ${formatCurrency(investmentCurrentValue)} to your portfolio.`;
+      } else if (scenario.assetPurchase) {
+        const ap = scenario.assetPurchase;
+        const isAppreciating = ap.annualDepreciation >= 0;
+        const rateStr = `${Math.abs(ap.annualDepreciation * 100).toFixed(0)}%/yr ${isAppreciating ? 'appreciation' : 'depreciation'}`;
+        detailStr = `Buying a ${ap.asset} for ${formatCurrency(ap.purchasePrice)} — it would be worth ~${formatCurrency(ap.currentValue)} today (${rateStr}). This asset adds ${formatCurrency(ap.currentValue)} to your portfolio. Ongoing costs: ~${formatCurrency(ap.monthlyExpenses)}/mo.`;
+      }
+
       const aiMsg: ChatMessage = {
         id: Date.now().toString(),
         role: 'assistant',
-        content: `Temporal shift confirmed! Created branch ${hierarchyCode} from branch ${parentBranch.hierarchyCode} at year ${divergenceYear}. ${scenario.explanation} Your new projected worth: ${formatCurrency(newWorth)}.`,
+        content: `Timeline branch ${hierarchyCode} created from ${formatMonthLabel(scenario.divergenceMonth)}! ${scenario.explanation} ${detailStr} Cash impact: ${formatCurrency(altCashBalance - parentBranch.calculatedNetWorth)}. Net worth impact: ${diffStr}. New net worth: ${formatCurrency(fullNetWorth)} (Cash: ${formatCurrency(altCashBalance)} + Assets: ${formatCurrency(scenarioAssetValue)}).`,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, aiMsg]);
@@ -608,42 +418,66 @@ const App: React.FC = () => {
       timestamp: new Date()
     }]);
 
-    const validationError = getTransactionValidationError(content, branches);
-    if (validationError) {
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: validationError,
-        timestamp: new Date()
-      }]);
-      return;
-    }
-
-    const targetBranchCode = parseBranchCodeFromPrompt(content);
-    const targetBranchId = targetBranchCode
-      ? branches.find(b => b.hierarchyCode === targetBranchCode)?.id
-      : selectedBranchId;
-    createBranch(content, undefined, targetBranchId);
+    // Branch from the currently selected branch
+    createBranch(content, selectedBranchId);
   };
 
-  const handleQuickBranch = (year: number, branchId: string) => {
-    const branch = branches.find(b => b.id === branchId);
-    const event = branch?.events.find(e => e.year === year);
-    
+  const handleQuickBranch = (month: string, prompt: string, branchId: string) => {
+    const sourceBranch = branches.find(b => b.id === branchId);
+    const branchLabel = sourceBranch ? `Branch ${sourceBranch.hierarchyCode}` : 'Prime';
+
+    // Ensure the user's prompt is anchored to the clicked month and source branch
+    const anchored = `Starting from ${formatMonthLabel(month)} on ${branchLabel}: ${prompt}`;
+
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: `What if I changed my decision in ${year} regarding "${event?.label}"?`,
+      content: anchored,
       timestamp: new Date()
     };
     setMessages(prev => [...prev, userMsg]);
-    createBranch(userMsg.content, year, branchId);
+    createBranch(anchored, branchId);
+  };
+
+  /** Reset all branches — keep only the original prime timeline */
+  const resetBranches = () => {
+    setBranches(prev => {
+      const orig = prev.find(b => b.isOriginal);
+      return orig ? [orig] : [MOCK_ORIGINAL_BRANCH];
+    });
+    setSelectedBranchId('original');
+    setMessages(makeWelcomeMessage());
+  };
+
+  /** Prune: delete the selected branch and all of its descendants */
+  const pruneBranch = () => {
+    if (selectedBranch.isOriginal) return; // can't prune prime
+    const toRemove = new Set<string>();
+    // Collect the selected branch and all descendants (BFS)
+    const queue = [selectedBranch.id];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      toRemove.add(id);
+      for (const b of branches) {
+        if (b.parentId === id && !toRemove.has(b.id)) {
+          queue.push(b.id);
+        }
+      }
+    }
+    setBranches(prev => prev.filter(b => !toRemove.has(b.id)));
+    setSelectedBranchId('original');
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      role: 'assistant',
+      content: `Pruned branch ${selectedBranch.hierarchyCode} (${selectedBranch.name}) and ${toRemove.size - 1} descendant${toRemove.size - 1 !== 1 ? 's' : ''}.`,
+      timestamp: new Date()
+    }]);
   };
 
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-sm font-semibold">
+      <div className={`min-h-screen flex items-center justify-center ${isDark ? '' : 'bg-slate-50'}`}>
+        <div className={`px-4 py-2 rounded-xl border text-sm font-semibold ${isDark ? 'glass border-blue-500/30 text-blue-300' : 'bg-white border-blue-200 text-blue-600 shadow-sm'}`}>
           Initializing secure session...
         </div>
       </div>
@@ -652,10 +486,14 @@ const App: React.FC = () => {
 
   if (!sessionUser) {
     return (
-      <div className="min-h-screen p-6 flex items-center justify-center">
-        <div className="glass w-full max-w-md p-6 rounded-2xl border border-slate-700/50 space-y-4">
-          <h2 className="text-xl font-bold text-white">{authMode === 'signup' ? 'Create account' : 'Login'}</h2>
-          <p className="text-slate-400 text-sm">Use your account to access transactions linked to your profile.</p>
+      <div className={`min-h-screen p-6 flex items-center justify-center ${isDark ? '' : 'bg-slate-50'}`}>
+        <div className={`w-full max-w-md p-6 rounded-2xl border space-y-4 ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-xl'}`}>
+          <div className="flex items-center gap-3 mb-2">
+            <LokiLogo size={36} />
+            <h1 className={`text-lg font-bold font-heading tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>Financial Time Machine</h1>
+          </div>
+          <h2 className={`text-xl font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>{authMode === 'signup' ? 'Create account' : 'Login'}</h2>
+          <p className={`text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Use your account to access transactions linked to your profile.</p>
 
           <form onSubmit={handleAuthSubmit} className="space-y-3">
             <input
@@ -663,7 +501,7 @@ const App: React.FC = () => {
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
               placeholder="Email"
-              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              className={`w-full rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-slate-900/60 border border-slate-700 text-white' : 'bg-slate-50 border border-slate-200 text-slate-900'}`}
               required
             />
             <input
@@ -671,7 +509,7 @@ const App: React.FC = () => {
               value={authPassword}
               onChange={(e) => setAuthPassword(e.target.value)}
               placeholder="Password"
-              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              className={`w-full rounded-xl px-3 py-2 text-sm ${isDark ? 'bg-slate-900/60 border border-slate-700 text-white' : 'bg-slate-50 border border-slate-200 text-slate-900'}`}
               required
               minLength={8}
             />
@@ -695,80 +533,117 @@ const App: React.FC = () => {
               setAuthMode(prev => prev === 'login' ? 'signup' : 'login');
               setAuthError(null);
             }}
-            className="text-xs text-slate-400 hover:text-slate-200"
+            className={`text-xs ${isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
           >
             {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Login'}
           </button>
+
+          {/* Theme toggle on login page */}
+          <div className="flex justify-center pt-2">
+            <button onClick={toggleTheme} className={`text-xs flex items-center gap-1.5 ${isDark ? 'text-slate-500 hover:text-slate-300' : 'text-slate-400 hover:text-slate-600'}`}>
+              <i className={`fa-solid ${isDark ? 'fa-sun' : 'fa-moon'}`}></i>
+              {isDark ? 'Light mode' : 'Dark mode'}
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
+  if (showProfile) {
+    return (
+      <ProfilePage
+        user={sessionUser}
+        onBack={() => setShowProfile(false)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
-    <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6">
+    <div className={`min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6 transition-colors duration-300 ${isDark ? '' : 'bg-slate-50'}`}>
       {/* Header */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-        <div className="relative">
-          <div className="absolute -left-4 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-500 via-purple-500 to-transparent rounded-full hidden md:block"></div>
-          <h1 className="text-4xl font-bold text-white tracking-tighter flex items-center gap-3">
-            <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">FINANCIAL</span>
-            <span className="font-light italic text-slate-500">TIME MACHINE</span>
-          </h1>
-          <p className="text-slate-400 text-sm mt-1 font-medium tracking-tight">
-            Advanced Multiverse Simulator <span className="text-slate-600 font-mono text-[10px] ml-2 px-2 py-0.5 border border-slate-800 rounded">v2.4.0-BETA</span>
-          </p>
+        <div className="relative flex items-center gap-4">
+          <LokiLogo size={48} />
+          <div>
+            <div className="absolute -left-4 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-500 via-purple-500 to-transparent rounded-full hidden md:block"></div>
+            <h1 className={`text-4xl font-bold tracking-tighter flex items-center gap-3 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+              <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">FINANCIAL</span>
+              <span className={`font-light italic ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>TIME MACHINE</span>
+            </h1>
+            <p className={`text-sm mt-1 font-medium tracking-tight ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              Go back in time. Change a decision. See the ripple effect.
+              <span className={`font-mono text-[10px] ml-2 px-2 py-0.5 border rounded ${isDark ? 'text-slate-600 border-slate-800' : 'text-slate-400 border-slate-300'}`}>v3.0</span>
+            </p>
+          </div>
         </div>
         
-        <div className="flex gap-2">
-          <div className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5">
+        <div className="flex gap-2 items-center">
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <i className={`fa-solid ${isDark ? 'fa-sun text-amber-400 group-hover:text-amber-300' : 'fa-moon text-blue-500 group-hover:text-blue-600'} transition-colors text-sm`}></i>
+          </button>
+
+          {/* Refresh — clear all branches */}
+          <button
+            onClick={resetBranches}
+            disabled={branches.length <= 1}
+            title="Reset all branches"
+            className={`px-3 py-2 rounded-2xl transition-all group disabled:opacity-30 disabled:cursor-not-allowed ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <i className={`fa-solid fa-arrows-rotate group-hover:text-blue-400 transition-colors text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
+          </button>
+
+          {/* Prune — delete selected branch + children */}
+          <button
+            onClick={pruneBranch}
+            disabled={selectedBranch.isOriginal}
+            title={selectedBranch.isOriginal ? 'Cannot prune the Prime timeline' : `Prune branch ${selectedBranch.hierarchyCode}`}
+            className={`px-3 py-2 rounded-2xl transition-all group disabled:opacity-30 disabled:cursor-not-allowed ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <i className={`fa-solid fa-scissors group-hover:text-amber-400 transition-colors text-sm ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
+            <span className={`text-[9px] font-bold group-hover:text-amber-300 uppercase tracking-widest ml-1.5 hidden md:inline ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Prune</span>
+          </button>
+
+          {/* Profile button */}
+          <button
+            onClick={() => setShowProfile(true)}
+            title="Edit Profile"
+            className={`px-3 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
+          >
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
+              <span className="text-[10px] font-bold text-white">{sessionUser.email.charAt(0).toUpperCase()}</span>
+            </div>
+          </button>
+
+          <div className={`px-4 py-2 rounded-2xl flex items-center gap-3 shadow-xl ${isDark ? 'glass border-slate-700/50 shadow-blue-500/5' : 'bg-white border border-slate-200 shadow-sm'}`}>
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{sessionUser.email}</span>
+            <span className={`text-[10px] font-bold uppercase tracking-widest ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>{sessionUser.email}</span>
           </div>
           <button
-            onClick={handlePlaidConnect}
-            disabled={isPlaidLoading || !isPlaidReady || isPlaidConnected}
-            className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5 disabled:opacity-60"
-            title={isPlaidConnected ? 'Plaid is connected' : 'Connect Plaid sandbox'}
-          >
-            <div className={`w-2 h-2 rounded-full ${isPlaidConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">
-              {isPlaidConnected ? 'Plaid Connected' : isPlaidLoading ? 'Connecting Plaid...' : 'Connect Plaid'}
-            </span>
-          </button>
-          {isPlaidConnected && (
-            <button
-              onClick={handlePlaidDisconnect}
-              disabled={isPlaidLoading}
-              className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group disabled:opacity-60"
-              title="Disconnect Plaid sandbox"
-            >
-              <i className="fa-solid fa-link-slash text-slate-400 group-hover:text-amber-400 transition-colors"></i>
-            </button>
-          )}
-          <button
             onClick={handleLogout}
-            className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group"
+            title="Logout"
+            className={`px-4 py-2 rounded-2xl transition-all group ${isDark ? 'glass border-slate-700/50 hover:bg-white/10' : 'bg-white border border-slate-200 hover:bg-slate-50 shadow-sm'}`}
           >
-            <i className="fa-solid fa-right-from-bracket text-slate-400 group-hover:text-rose-400 transition-colors"></i>
+            <i className={`fa-solid fa-right-from-bracket group-hover:text-rose-400 transition-colors ${isDark ? 'text-slate-400' : 'text-slate-500'}`}></i>
           </button>
         </div>
       </header>
 
       {isLoadingAtlas && (
-        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-xs font-semibold">
+        <div className={`px-4 py-2 rounded-xl border text-xs font-semibold ${isDark ? 'glass border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-600'}`}>
           Syncing transactions from Atlas...
         </div>
       )}
 
       {atlasLoadError && (
-        <div className="glass px-4 py-2 rounded-xl border border-amber-500/30 text-amber-300 text-xs font-semibold">
+        <div className={`px-4 py-2 rounded-xl border text-xs font-semibold ${isDark ? 'glass border-amber-500/30 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-600'}`}>
           {atlasLoadError}
-        </div>
-      )}
-
-      {plaidError && (
-        <div className="glass px-4 py-2 rounded-xl border border-rose-500/30 text-rose-300 text-xs font-semibold">
-          {plaidError}
         </div>
       )}
 
@@ -781,51 +656,42 @@ const App: React.FC = () => {
             selectedBranchId={selectedBranchId}
             onSelectBranch={setSelectedBranchId}
             onQuickBranch={handleQuickBranch}
+            isProcessing={isProcessing}
           />
           
           <StatCards 
             branch={selectedBranch} 
-            parentBranch={branches.find(b => b.id === selectedBranch.parentId) || null}
             originalBranch={originalBranch} 
           />
 
-          <div className="glass p-6 rounded-2xl relative overflow-hidden group border border-slate-700/50">
+          {/* Timeline Ledger — show monthly events for selected branch */}
+          <div className={`p-6 rounded-2xl relative overflow-hidden group border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
             <div className="absolute top-0 left-0 w-1.5 h-full" style={{ backgroundColor: selectedBranch.color }}></div>
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold flex items-center gap-2">
+              <h3 className={`text-lg font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
                 <i className="fa-solid fa-list-check text-slate-400"></i>
                 Timeline Ledger: <span style={{ color: selectedBranch.color }}>Branch {selectedBranch.hierarchyCode} - {selectedBranch.name}</span>
               </h3>
-              <span className="text-[10px] font-black bg-slate-800 px-3 py-1 rounded-full text-slate-400 uppercase tracking-widest border border-slate-700">
-                {selectedBranch.events.length} Data Points
+              <span className={`text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest border ${isDark ? 'bg-slate-800 text-slate-400 border-slate-700' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                {selectedBranch.events.length} Transactions
               </span>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-              {selectedBranch.events.map((event, idx) => {
-                const isAfterDivergence = event.year >= selectedBranch.divergenceYear;
-                // Find market data for this year if it exists
-                const marketData = selectedBranch.marketTrends?.find(m => m.year === event.year);
-
-                return (
+              {selectedBranch.events.slice(-40).map((event, idx) => (
                   <div 
                     key={idx} 
-                    className={`flex items-start gap-4 p-4 rounded-2xl transition-all border ${
-                      isAfterDivergence 
-                        ? 'bg-slate-800/40 border-slate-700/50 shadow-lg' 
-                        : 'bg-slate-900/20 border-transparent opacity-60 grayscale-[0.5]'
-                    }`}
+                    className={`flex items-start gap-4 p-4 rounded-2xl transition-all border shadow-lg ${isDark ? 'bg-slate-800/40 border-slate-700/50' : 'bg-slate-50 border-slate-200'}`}
                   >
                     <div className="flex flex-col items-center">
-                      <div className="w-10 h-10 rounded-xl bg-slate-950 flex items-center justify-center border border-slate-800 mb-1">
-                        <span className="text-xs font-black text-white">{event.year.toString().slice(-2)}</span>
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center border mb-1 ${isDark ? 'bg-slate-950 border-slate-800' : 'bg-white border-slate-200'}`}>
+                        <span className={`text-[9px] font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{formatMonthLabel(event.month)}</span>
                       </div>
-                      <div className={`w-0.5 flex-1 ${idx === selectedBranch.events.length - 1 ? 'hidden' : 'bg-slate-800'}`}></div>
                     </div>
                     
                     <div className="flex-1">
                       <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-slate-100">{event.label}</p>
+                        <p className={`text-xs font-bold ${isDark ? 'text-slate-100' : 'text-slate-800'}`}>{event.label}</p>
                         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                           event.type === 'income' ? 'bg-emerald-500/10 text-emerald-400' : 
                           event.type === 'expense' ? 'bg-rose-500/10 text-rose-400' : 'bg-blue-500/10 text-blue-400'
@@ -833,30 +699,13 @@ const App: React.FC = () => {
                           {event.type}
                         </span>
                       </div>
-                      <p className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-relaxed">{event.description}</p>
-                      
-                      {marketData && isAfterDivergence && (
-                         <div className="mt-1 flex items-center gap-2">
-                           <span className={`text-[9px] font-mono px-1 rounded ${marketData.growthRate >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                             {marketData.growthRate >= 0 ? '▲' : '▼'} {(marketData.growthRate * 100).toFixed(1)}% Market
-                           </span>
-                           <span className="text-[9px] text-slate-600 truncate max-w-[120px]">{marketData.narrative}</span>
-                         </div>
-                      )}
-
-                      <div className="mt-2 flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-slate-300">{formatCurrency(event.amount)}</span>
-                        {isAfterDivergence && (
-                          <div className="flex items-center gap-1">
-                            <i className="fa-solid fa-code-branch text-[8px] text-purple-400"></i>
-                            <span className="text-[8px] text-purple-400 font-bold uppercase tracking-tighter">Modified</span>
-                          </div>
-                        )}
+                      <p className={`text-[10px] mt-1 line-clamp-2 leading-relaxed ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>{event.description}</p>
+                      <div className="mt-2">
+                        <span className={`text-xs font-mono font-bold ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{formatCurrency(event.amount)}</span>
                       </div>
                     </div>
                   </div>
-                );
-              })}
+              ))}
             </div>
           </div>
         </div>
@@ -870,23 +719,27 @@ const App: React.FC = () => {
           />
           
           {/* Quick Context Panel */}
-          <div className="mt-4 glass p-5 rounded-2xl border border-slate-700/50">
-            <h4 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+          <div className={`mt-4 p-5 rounded-2xl border ${isDark ? 'glass border-slate-700/50' : 'bg-white border-slate-200 shadow-lg'}`}>
+            <h4 className={`text-[10px] font-black uppercase tracking-widest mb-4 flex items-center gap-2 ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>
               <i className="fa-solid fa-microchip"></i>
-              Simulation Suggestions
+              What-If Suggestions
             </h4>
             <div className="space-y-2">
               {[
-                "Skip the MBA degree in 2018",
-                "Start investing in Crypto in 2013",
-                "Avoid the house deposit in 2021",
-                "Switch careers in 2015"
+                "What if I stopped buying coffee in 2020?",
+                "What if I invested $5000 in NVIDIA in Jan 2020?",
+                "What if I cut dining expenses in half 3 years ago?",
+                "What if I invested $1000 in Bitcoin in 2017?"
               ].map((s, i) => (
                 <button 
                   key={i} 
                   onClick={() => handleSendMessage(s)}
                   disabled={isProcessing}
-                  className="w-full text-left p-2.5 rounded-xl bg-slate-900/40 border border-slate-800 hover:border-blue-500/50 hover:bg-slate-800/60 transition-all text-[11px] text-slate-400 flex items-center justify-between group"
+                  className={`w-full text-left p-2.5 rounded-xl border transition-all text-[11px] flex items-center justify-between group ${
+                    isDark
+                      ? 'bg-slate-900/40 border-slate-800 hover:border-blue-500/50 hover:bg-slate-800/60 text-slate-400'
+                      : 'bg-slate-50 border-slate-200 hover:border-blue-400 hover:bg-blue-50 text-slate-500'
+                  }`}
                 >
                   {s}
                   <i className="fa-solid fa-chevron-right text-[8px] opacity-0 group-hover:opacity-100 transition-opacity"></i>
@@ -897,24 +750,30 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Footer / Status */}
-      <footer className="pt-8 border-t border-slate-800/50 flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] text-slate-500 font-bold tracking-widest uppercase">
+      {/* Footer */}
+      <footer className={`pt-8 border-t flex flex-col md:flex-row justify-between items-center gap-4 text-[10px] font-bold tracking-widest uppercase ${isDark ? 'border-slate-800/50 text-slate-500' : 'border-slate-200 text-slate-400'}`}>
         <div className="flex gap-6">
-          <span className="flex items-center gap-2"><i className="fa-solid fa-microchip text-blue-500"></i> Engine: Gemini 3.0 Pro</span>
-          <span className="flex items-center gap-2"><i className="fa-solid fa-shield-halved text-emerald-500"></i> Safety: Grade A</span>
+          <span className="flex items-center gap-2"><i className="fa-solid fa-microchip text-blue-500"></i> Engine: Gemini 2.5 Flash</span>
+          <span className="flex items-center gap-2"><i className="fa-solid fa-shield-halved text-emerald-500"></i> Data: MongoDB Atlas</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-slate-600">Syncing Multiverse state...</span>
+          <span className={isDark ? 'text-slate-600' : 'text-slate-400'}>Analyzing alternate timelines...</span>
           <div className="flex gap-1">
             <div className="w-1 h-1 rounded-full bg-blue-500"></div>
             <div className="w-1 h-1 rounded-full bg-blue-500/50"></div>
             <div className="w-1 h-1 rounded-full bg-blue-500/20"></div>
           </div>
-          <span className="ml-4">© 2025 Temporal Financial Labs</span>
+          <span className="ml-4">© 2026 Financial Time Machine</span>
         </div>
       </footer>
     </div>
   );
 };
+
+const App: React.FC = () => (
+  <ThemeProvider>
+    <AppInner />
+  </ThemeProvider>
+);
 
 export default App;

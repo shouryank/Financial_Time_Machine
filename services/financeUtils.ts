@@ -1,51 +1,70 @@
 
-import { FinancialEvent, MarketTrend } from '../types';
-import { CURRENT_YEAR, START_YEAR } from '../constants';
+import { FinancialEvent, MonthlyBalance, ScenarioAsset } from '../types';
+import { CURRENT_MONTH, START_MONTH, monthRange } from '../constants';
 
-export const calculateCompoundGrowth = (
-  initialValue: number,
+/**
+ * Build a cumulative running balance from a sorted list of financial events.
+ * Returns one MonthlyBalance entry per month from the earliest event to CURRENT_MONTH.
+ */
+export const buildCumulativeBalance = (
   events: FinancialEvent[],
-  marketTrends: MarketTrend[] = []
-): number => {
-  let currentValue = initialValue;
-  let currentAnnualIncome = 0;
-  
-  // We simulate the full timeline from the beginning (2010) to now (2025)
-  // to ensure all past salary accumulation is accounted for.
-  for (let year = START_YEAR; year <= CURRENT_YEAR; year++) {
-    
-    // 1. Determine Growth Rate for this year
-    // If specific AI historical data exists, use it. Otherwise default to 7%
-    const trend = marketTrends.find(t => t.year === year);
-    const annualReturn = trend ? trend.growthRate : 0.07;
+  startMonth?: string
+): MonthlyBalance[] => {
+  const start = startMonth || (events.length > 0 ? events[0].month : START_MONTH);
+  const months = monthRange(start, CURRENT_MONTH);
 
-    // Apply growth to previous year's total
-    currentValue *= (1 + annualReturn);
-    
-    // 2. Process events for this specific year
-    const yearEvents = events.filter(e => e.year === year);
-    for (const event of yearEvents) {
-      if (event.type === 'income') {
-        // Income events update the "Annual Salary" state
-        // This persists for future years until changed
-        currentAnnualIncome = event.amount;
-      } else if (event.type === 'expense') {
-        currentValue -= event.amount;
-      } else if (event.type === 'investment') {
-        // Direct injection of extra capital
-        currentValue += event.amount;
-      }
-    }
-
-    // 3. Add Annual Savings (20% of current salary)
-    // This ensures that even in years with no events, you are saving money
-    if (currentAnnualIncome > 0) {
-      currentValue += currentAnnualIncome * 0.2;
-    }
+  // Bucket events by month
+  const eventsByMonth = new Map<string, FinancialEvent[]>();
+  for (const e of events) {
+    const bucket = eventsByMonth.get(e.month) || [];
+    bucket.push(e);
+    eventsByMonth.set(e.month, bucket);
   }
-  
-  // Return rounded value. We allow negative numbers to show debt.
-  return Math.round(currentValue);
+
+  let balance = 0;
+  const result: MonthlyBalance[] = [];
+
+  for (const m of months) {
+    const monthEvents = eventsByMonth.get(m) || [];
+    for (const e of monthEvents) {
+      if (e.type === 'income') balance += e.amount;
+      else balance -= e.amount; // expense & investment reduce cash
+    }
+    result.push({ month: m, balance: Math.round(balance) });
+  }
+
+  return result;
+};
+
+/**
+ * Apply a what-if delta to a base cumulative balance starting at divergenceMonth.
+ * Returns a new cumulative balance array representing the alternate timeline.
+ *
+ * @param baseBalance    – the prime timeline cumulative balance
+ * @param divergenceMonth – when the change starts
+ * @param monthlyDelta   – net monthly cash difference (positive = saving more)
+ * @param lumpSumDelta   – one-time change at divergence (e.g. investment gain)
+ */
+export const applyWhatIfDelta = (
+  baseBalance: MonthlyBalance[],
+  divergenceMonth: string,
+  monthlyDelta: number,
+  lumpSumDelta: number
+): MonthlyBalance[] => {
+  let accumulatedDelta = 0;
+  let divergenceReached = false;
+
+  return baseBalance.map(entry => {
+    if (entry.month >= divergenceMonth) {
+      if (!divergenceReached) {
+        divergenceReached = true;
+        accumulatedDelta += lumpSumDelta;
+      }
+      accumulatedDelta += monthlyDelta;
+      return { month: entry.month, balance: Math.round(entry.balance + accumulatedDelta) };
+    }
+    return { ...entry };
+  });
 };
 
 export const formatCurrency = (amount: number): string => {
@@ -61,4 +80,118 @@ export const formatPercentage = (rate: number): string => {
     style: 'percent',
     maximumFractionDigits: 1
   }).format(rate);
+};
+
+/** Annual growth rates by investment category keyword */
+const INVESTMENT_GROWTH_RATES: Record<string, number> = {
+  'index fund': 0.10,          // ~10% annual (S&P 500 average)
+  'etf': 0.10,
+  's&p': 0.10,
+  'mutual fund': 0.08,
+  'private equity': 0.12,      // ~12% annual
+  'savings': 0.04,             // ~4% HYSA
+  'bond': 0.05,
+  'bitcoin': 0.60,             // aggressive crypto avg
+  'crypto': 0.40,
+  'real estate': 0.07,
+  'reit': 0.08,
+};
+const DEFAULT_GROWTH_RATE = 0.08; // 8% fallback
+
+/** Determine annual growth rate from merchant/category text */
+const getGrowthRate = (label: string): number => {
+  const lower = label.toLowerCase();
+  for (const [keyword, rate] of Object.entries(INVESTMENT_GROWTH_RATES)) {
+    if (lower.includes(keyword)) return rate;
+  }
+  return DEFAULT_GROWTH_RATE;
+};
+
+/** Count months between two "YYYY-MM" strings */
+const monthsBetween = (from: string, to: string): number => {
+  const [fy, fm] = from.split('-').map(Number);
+  const [ty, tm] = to.split('-').map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+};
+
+export interface InvestmentHolding {
+  label: string;
+  principal: number;
+  currentValue: number;
+  growthRate: number;      // annual
+  investedMonth: string;
+}
+
+/**
+ * Calculate the current appreciated/depreciated value of all investment events.
+ * Returns individual holdings and the total portfolio value.
+ */
+export const calculateInvestmentPortfolio = (
+  events: FinancialEvent[],
+  currentMonth: string
+): { holdings: InvestmentHolding[]; totalPortfolioValue: number; totalPrincipal: number } => {
+  const investments = events.filter(e => e.type === 'investment');
+  const holdings: InvestmentHolding[] = investments.map(inv => {
+    const rate = getGrowthRate(inv.label + ' ' + inv.description);
+    const months = Math.max(0, monthsBetween(inv.month, currentMonth));
+    const monthlyRate = Math.pow(1 + rate, 1 / 12) - 1;
+    const currentValue = Math.round(inv.amount * Math.pow(1 + monthlyRate, months));
+    return {
+      label: inv.label,
+      principal: inv.amount,
+      currentValue,
+      growthRate: rate,
+      investedMonth: inv.month,
+    };
+  });
+
+  const totalPortfolioValue = holdings.reduce((sum, h) => sum + h.currentValue, 0);
+  const totalPrincipal = holdings.reduce((sum, h) => sum + h.principal, 0);
+  return { holdings, totalPortfolioValue, totalPrincipal };
+};
+
+export interface ScenarioAssetHolding {
+  asset: string;
+  category: string;
+  purchasePrice: number;
+  currentValue: number;
+  gainLoss: number;
+  annualGrowthRate: number;
+  monthlyExpenses: number;
+  totalExpenses: number;
+  purchaseMonth: string;
+}
+
+/**
+ * Calculate the current value of scenario-created assets (homes, vehicles, stocks).
+ * These are assets created through what-if branches, not from real transaction data.
+ */
+export const calculateScenarioAssetPortfolio = (
+  scenarioAssets: ScenarioAsset[],
+  currentMonth: string
+): { holdings: ScenarioAssetHolding[]; totalAssetValue: number; totalPurchaseCost: number; totalOngoingExpenses: number } => {
+  if (!scenarioAssets || scenarioAssets.length === 0) {
+    return { holdings: [], totalAssetValue: 0, totalPurchaseCost: 0, totalOngoingExpenses: 0 };
+  }
+
+  const holdings: ScenarioAssetHolding[] = scenarioAssets.map(asset => {
+    const months = Math.max(0, monthsBetween(asset.purchaseMonth, currentMonth));
+    const totalExpenses = Math.round(asset.monthlyExpenses * months);
+    return {
+      asset: asset.asset,
+      category: asset.category,
+      purchasePrice: asset.purchasePrice,
+      currentValue: asset.currentValue,
+      gainLoss: asset.currentValue - asset.purchasePrice,
+      annualGrowthRate: asset.annualGrowthRate,
+      monthlyExpenses: asset.monthlyExpenses,
+      totalExpenses,
+      purchaseMonth: asset.purchaseMonth,
+    };
+  });
+
+  const totalAssetValue = holdings.reduce((sum, h) => sum + h.currentValue, 0);
+  const totalPurchaseCost = holdings.reduce((sum, h) => sum + h.purchasePrice, 0);
+  const totalOngoingExpenses = holdings.reduce((sum, h) => sum + h.totalExpenses, 0);
+  return { holdings, totalAssetValue, totalPurchaseCost, totalOngoingExpenses };
 };

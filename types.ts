@@ -1,6 +1,6 @@
 
 export interface FinancialEvent {
-  year: number;
+  month: string;          // "YYYY-MM" e.g. "2023-06"
   label: string;
   amount: number;
   type: 'income' | 'expense' | 'investment';
@@ -8,22 +8,42 @@ export interface FinancialEvent {
 }
 
 export interface MarketTrend {
-  year: number;
-  growthRate: number; // e.g. 0.20 for 20% growth, -0.05 for 5% loss
-  narrative: string; // "Crypto bull run" or "Housing market crash"
+  month: string;          // "YYYY-MM"
+  growthRate: number;     // monthly rate e.g. 0.02 for 2%
+  narrative: string;
 }
 
 export interface TimelineBranch {
   id: string;
-  parentId?: string; // ID of the branch this one diverged from
-  hierarchyCode: string; // Human-readable branch code e.g. 1, 1.1, 1.2.1
+  parentId?: string;
+  hierarchyCode: string;
   name: string;
   color: string;
   isOriginal: boolean;
   events: FinancialEvent[];
-  marketTrends: MarketTrend[]; // Historical performance data for this timeline
-  calculatedNetWorth: number; // Final worth at current year (2025)
-  divergenceYear: number;
+  marketTrends: MarketTrend[];
+  cumulativeBalance: MonthlyBalance[];   // running balance per month for chart
+  calculatedNetWorth: number;            // final balance at present month
+  divergenceMonth: string;               // "YYYY-MM"
+  /** Scenario-created assets (homes, cars, stocks bought via what-if) */
+  scenarioAssets: ScenarioAsset[];
+}
+
+/** An asset or investment created by a what-if scenario branch */
+export interface ScenarioAsset {
+  asset: string;              // e.g. "Home", "NVIDIA", "Car"
+  purchasePrice: number;      // original cost
+  currentValue: number;       // estimated value today
+  annualGrowthRate: number;   // positive = appreciating (home), negative = depreciating (car)
+  monthlyExpenses: number;    // recurring costs (tax, insurance, maintenance)
+  purchaseMonth: string;      // "YYYY-MM" when purchased in the scenario
+  category: 'real_estate' | 'vehicle' | 'investment' | 'other';
+}
+
+/** Pre-computed running balance for charting */
+export interface MonthlyBalance {
+  month: string;   // "YYYY-MM"
+  balance: number;
 }
 
 export interface ChatMessage {
@@ -34,9 +54,36 @@ export interface ChatMessage {
 }
 
 export interface SimulationScenario {
-  divergenceYear: number;
-  newEvents: FinancialEvent[];
+  divergenceMonth: string;           // "YYYY-MM"
+  whatIfDescription: string;         // human-readable description
+  removedSpending: RemovedSpending | null;
+  addedInvestment: AddedInvestment | null;
+  assetPurchase: AssetPurchase | null;
+  monthlyImpact: number;            // net monthly cash difference
+  totalImpact: number;              // total accumulated difference to present
   branchName: string;
   explanation: string;
-  marketTrends: MarketTrend[];
+}
+
+/** Describes recurring spending the user wants to eliminate */
+export interface RemovedSpending {
+  category: string;       // e.g. "Coffee"
+  monthlyAmount: number;  // average monthly spend
+}
+
+/** Describes an investment the user wishes they had made */
+export interface AddedInvestment {
+  asset: string;          // e.g. "NVIDIA", "Bitcoin"
+  amountInvested: number;
+  priceAtEntry: number;
+  priceNow: number;
+}
+
+/** Describes a one-time purchase of a depreciating (or appreciating) asset */
+export interface AssetPurchase {
+  asset: string;              // e.g. "Car", "Boat", "House"
+  purchasePrice: number;      // what they paid
+  currentValue: number;       // estimated value today
+  annualDepreciation: number; // e.g. -0.15 for 15% annual depreciation
+  monthlyExpenses: number;    // recurring costs (insurance, maintenance, gas)
 }

@@ -1,26 +1,61 @@
 
-import { FinancialEvent, TimelineBranch } from './types';
+import { TimelineBranch } from './types';
 
-export const CURRENT_YEAR = 2025;
-export const START_YEAR = 2010;
+export const CURRENT_MONTH = '2026-02';   // present month
+export const START_MONTH = '2015-01';     // earliest data in Atlas
 
-export const INITIAL_EVENTS: FinancialEvent[] = [
-  { year: 2010, label: 'First Job', amount: 45000, type: 'income', description: 'Started as a Junior Analyst.' },
-  { year: 2013, label: 'Car Purchase', amount: 25000, type: 'expense', description: 'Bought a reliable sedan.' },
-  { year: 2015, label: '401k Start', amount: 5000, type: 'investment', description: 'Began matching employer contributions.' },
-  { year: 2018, label: 'MBA Degree', amount: 60000, type: 'expense', description: 'Invested in higher education.' },
-  { year: 2021, label: 'Home Deposit', amount: 100000, type: 'expense', description: 'Down payment for a suburban house.' },
-  { year: 2023, label: 'Tech Promotion', amount: 130000, type: 'income', description: 'Senior role at a software firm.' }
+// Keep legacy year constants for anything that still references them during migration
+export const CURRENT_YEAR = 2026;
+export const START_YEAR = 2015;
+
+/** Generate an ordered array of "YYYY-MM" strings between two months (inclusive). */
+export const monthRange = (from: string, to: string): string[] => {
+  const months: string[] = [];
+  const [startY, startM] = from.split('-').map(Number);
+  const [endY, endM] = to.split('-').map(Number);
+  let y = startY;
+  let m = startM;
+  while (y < endY || (y === endY && m <= endM)) {
+    months.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++;
+    if (m > 12) { m = 1; y++; }
+  }
+  return months;
+};
+
+/** Format "YYYY-MM" to a short human label like "Jan '15" */
+export const formatMonthLabel = (month: string): string => {
+  const [y, m] = month.split('-').map(Number);
+  const labels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${labels[m - 1]} '${String(y).slice(-2)}`;
+};
+
+/** Visually distinct branch colors – original uses #3b82f6 (blue), these avoid it. */
+export const BRANCH_COLORS: string[] = [
+  '#f97316', // orange
+  '#a855f7', // purple
+  '#14b8a6', // teal
+  '#ef4444', // red
+  '#eab308', // yellow
+  '#ec4899', // pink
+  '#22c55e', // green
+  '#06b6d4', // cyan
+  '#f43f5e', // rose
+  '#8b5cf6', // violet
+  '#84cc16', // lime
+  '#d946ef', // fuchsia
 ];
 
 export const MOCK_ORIGINAL_BRANCH: TimelineBranch = {
   id: 'original',
   hierarchyCode: '1',
   name: 'Prime Timeline',
-  color: '#3b82f6', // blue
+  color: '#3b82f6',
   isOriginal: true,
-  events: INITIAL_EVENTS,
-  marketTrends: [], // Empty implies default 7% growth
-  calculatedNetWorth: 420000,
-  divergenceYear: 2010
+  events: [],
+  marketTrends: [],
+  cumulativeBalance: [],
+  calculatedNetWorth: 0,
+  divergenceMonth: START_MONTH,
+  scenarioAssets: []
 };
