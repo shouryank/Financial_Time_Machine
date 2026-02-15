@@ -7,6 +7,7 @@ import ScenarioChat from './components/ScenarioChat';
 import StatCards from './components/StatCards';
 import { generateScenario } from './services/geminiService';
 import { calculateCompoundGrowth, formatCurrency } from './services/financeUtils';
+import { usePlaidLink } from 'react-plaid-link';
 
 const parseAmountFromPrompt = (text: string): number | null => {
   const matches = [...text.matchAll(/\$?\s*(\d+(?:\.\d+)?)\s*([kKmM])?/g)];
@@ -158,6 +159,11 @@ type AtlasTransaction = {
   intent?: string;
 };
 
+type SessionUser = {
+  id: string;
+  email: string;
+};
+
 const mapTransactionType = (rawType: string | undefined, amount: number): FinancialEvent['type'] => {
   const normalized = (rawType || '').toLowerCase();
   if (normalized === 'credit') return 'income';
@@ -210,6 +216,17 @@ const App: React.FC = () => {
   const [selectedBranchId, setSelectedBranchId] = useState<string>(MOCK_ORIGINAL_BRANCH.id);
   const [isLoadingAtlas, setIsLoadingAtlas] = useState(true);
   const [atlasLoadError, setAtlasLoadError] = useState<string | null>(null);
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [plaidLinkToken, setPlaidLinkToken] = useState<string | null>(null);
+  const [isPlaidConnected, setIsPlaidConnected] = useState(false);
+  const [isPlaidLoading, setIsPlaidLoading] = useState(false);
+  const [plaidError, setPlaidError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -223,7 +240,157 @@ const App: React.FC = () => {
   useEffect(() => {
     let alive = true;
 
+    const bootstrapSession = async () => {
+      setIsAuthLoading(true);
+      try {
+        const response = await fetch('/api/auth/me');
+        if (!alive) return;
+        if (!response.ok) {
+          setSessionUser(null);
+          return;
+        }
+        const payload: { user?: SessionUser | null } = await response.json();
+        setSessionUser(payload?.user ?? null);
+      } catch {
+        if (!alive) return;
+        setSessionUser(null);
+      } finally {
+        if (!alive) return;
+        setIsAuthLoading(false);
+      }
+    };
+
+    bootstrapSession();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    const initializePlaid = async () => {
+      if (!sessionUser) {
+        setPlaidLinkToken(null);
+        setIsPlaidConnected(false);
+        setPlaidError(null);
+        return;
+      }
+
+      setIsPlaidLoading(true);
+      setPlaidError(null);
+
+      try {
+        const [statusResponse, tokenResponse] = await Promise.all([
+          fetch('/api/plaid/status'),
+          fetch('/api/plaid/create_link_token', { method: 'POST' })
+        ]);
+
+        if (!statusResponse.ok) {
+          const statusPayload = await statusResponse.json().catch(() => ({}));
+          throw new Error(statusPayload?.error || `Plaid status failed (${statusResponse.status})`);
+        }
+
+        if (!tokenResponse.ok) {
+          const tokenPayload = await tokenResponse.json().catch(() => ({}));
+          throw new Error(tokenPayload?.error || `Plaid link token failed (${tokenResponse.status})`);
+        }
+
+        const statusPayload: { connected?: boolean } = await statusResponse.json();
+        const tokenPayload: { link_token?: string } = await tokenResponse.json();
+
+        if (!alive) return;
+        setIsPlaidConnected(Boolean(statusPayload.connected));
+        setPlaidLinkToken(tokenPayload.link_token || null);
+      } catch (error: any) {
+        if (!alive) return;
+        setPlaidError(error?.message || 'Unable to initialize Plaid');
+      } finally {
+        if (!alive) return;
+        setIsPlaidLoading(false);
+      }
+    };
+
+    initializePlaid();
+    return () => {
+      alive = false;
+    };
+  }, [sessionUser]);
+
+  const { open: openPlaidLink, ready: isPlaidReady } = usePlaidLink({
+    token: plaidLinkToken,
+    onSuccess: async (publicToken) => {
+      setPlaidError(null);
+      setIsPlaidLoading(true);
+      try {
+        const response = await fetch('/api/plaid/exchange_public_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_token: publicToken })
+        });
+
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload?.error || 'Plaid token exchange failed');
+        }
+
+        setIsPlaidConnected(true);
+      } catch (error: any) {
+        setPlaidError(error?.message || 'Failed to complete Plaid connection');
+      } finally {
+        setIsPlaidLoading(false);
+      }
+    },
+    onExit: (error) => {
+      if (error?.display_message || error?.error_message) {
+        setPlaidError(error.display_message || error.error_message || 'Plaid Link exited with an error');
+      }
+    }
+  });
+
+  const handlePlaidConnect = () => {
+    if (!isPlaidReady || !plaidLinkToken) {
+      setPlaidError('Plaid Link is not ready yet');
+      return;
+    }
+    openPlaidLink();
+  };
+
+  const handlePlaidDisconnect = async () => {
+    setPlaidError(null);
+    setIsPlaidLoading(true);
+    try {
+      const response = await fetch('/api/plaid/disconnect', { method: 'POST' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload?.error || 'Unable to disconnect Plaid');
+      }
+      setIsPlaidConnected(false);
+
+      const tokenResponse = await fetch('/api/plaid/create_link_token', { method: 'POST' });
+      if (tokenResponse.ok) {
+        const tokenPayload: { link_token?: string } = await tokenResponse.json();
+        setPlaidLinkToken(tokenPayload.link_token || null);
+      }
+    } catch (error: any) {
+      setPlaidError(error?.message || 'Unable to disconnect Plaid');
+    } finally {
+      setIsPlaidLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let alive = true;
+
     const loadAtlasTransactions = async () => {
+      if (!sessionUser) {
+        setIsLoadingAtlas(false);
+        setAtlasLoadError(null);
+        setBranches([MOCK_ORIGINAL_BRANCH]);
+        setSelectedBranchId(MOCK_ORIGINAL_BRANCH.id);
+        return;
+      }
+
       setIsLoadingAtlas(true);
       setAtlasLoadError(null);
 
@@ -259,7 +426,50 @@ const App: React.FC = () => {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [sessionUser]);
+
+  const handleAuthSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAuthError(null);
+    setIsAuthSubmitting(true);
+
+    try {
+      const endpoint = authMode === 'signup' ? '/api/auth/signup' : '/api/auth/login';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authEmail, password: authPassword })
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setAuthError(payload?.error || 'Authentication failed');
+        return;
+      }
+
+      const meResponse = await fetch('/api/auth/me');
+      const mePayload = await meResponse.json().catch(() => ({}));
+      setSessionUser(mePayload?.user ?? null);
+      setAuthPassword('');
+    } catch {
+      setAuthError('Unable to connect to auth service');
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      setSessionUser(null);
+      setPlaidLinkToken(null);
+      setIsPlaidConnected(false);
+      setPlaidError(null);
+      setBranches([MOCK_ORIGINAL_BRANCH]);
+      setSelectedBranchId(MOCK_ORIGINAL_BRANCH.id);
+    }
+  };
 
   const selectedBranch = branches.find(b => b.id === selectedBranchId) || branches[0];
   const originalBranch = branches.find(b => b.id === 'original') || MOCK_ORIGINAL_BRANCH;
@@ -428,6 +638,70 @@ const App: React.FC = () => {
     createBranch(userMsg.content, year, branchId);
   };
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="glass px-4 py-2 rounded-xl border border-blue-500/30 text-blue-300 text-sm font-semibold">
+          Initializing secure session...
+        </div>
+      </div>
+    );
+  }
+
+  if (!sessionUser) {
+    return (
+      <div className="min-h-screen p-6 flex items-center justify-center">
+        <div className="glass w-full max-w-md p-6 rounded-2xl border border-slate-700/50 space-y-4">
+          <h2 className="text-xl font-bold text-white">{authMode === 'signup' ? 'Create account' : 'Login'}</h2>
+          <p className="text-slate-400 text-sm">Use your account to access transactions linked to your profile.</p>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-3">
+            <input
+              type="email"
+              value={authEmail}
+              onChange={(e) => setAuthEmail(e.target.value)}
+              placeholder="Email"
+              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              required
+            />
+            <input
+              type="password"
+              value={authPassword}
+              onChange={(e) => setAuthPassword(e.target.value)}
+              placeholder="Password"
+              className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+              required
+              minLength={8}
+            />
+
+            {authError && (
+              <div className="text-rose-300 text-xs border border-rose-500/30 rounded-lg px-2 py-1">{authError}</div>
+            )}
+
+            <button
+              type="submit"
+              disabled={isAuthSubmitting}
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl px-3 py-2"
+            >
+              {isAuthSubmitting ? 'Please wait...' : authMode === 'signup' ? 'Sign up' : 'Login'}
+            </button>
+          </form>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode(prev => prev === 'login' ? 'signup' : 'login');
+              setAuthError(null);
+            }}
+            className="text-xs text-slate-400 hover:text-slate-200"
+          >
+            {authMode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Login'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto space-y-6">
       {/* Header */}
@@ -444,12 +718,35 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex gap-2">
-          <div className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5">
-            <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Active Link: Plaid</span>
+          <div className="glass px-4 py-2 rounded-2xl border-slate-700/50 text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+            {sessionUser.email}
           </div>
-          <button className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group">
-            <i className="fa-solid fa-bolt text-slate-400 group-hover:text-yellow-400 transition-colors"></i>
+          <button
+            onClick={handlePlaidConnect}
+            disabled={isPlaidLoading || !isPlaidReady || isPlaidConnected}
+            className="glass px-4 py-2 rounded-2xl flex items-center gap-3 border-slate-700/50 shadow-xl shadow-blue-500/5 disabled:opacity-60"
+            title={isPlaidConnected ? 'Plaid is connected' : 'Connect Plaid sandbox'}
+          >
+            <div className={`w-2 h-2 rounded-full ${isPlaidConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-400'}`}></div>
+            <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+              {isPlaidConnected ? 'Plaid Connected' : isPlaidLoading ? 'Connecting Plaid...' : 'Connect Plaid'}
+            </span>
+          </button>
+          {isPlaidConnected && (
+            <button
+              onClick={handlePlaidDisconnect}
+              disabled={isPlaidLoading}
+              className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group disabled:opacity-60"
+              title="Disconnect Plaid sandbox"
+            >
+              <i className="fa-solid fa-link-slash text-slate-400 group-hover:text-amber-400 transition-colors"></i>
+            </button>
+          )}
+          <button
+            onClick={handleLogout}
+            className="glass px-4 py-2 rounded-2xl hover:bg-white/10 transition-all border-slate-700/50 group"
+          >
+            <i className="fa-solid fa-right-from-bracket text-slate-400 group-hover:text-rose-400 transition-colors"></i>
           </button>
         </div>
       </header>
@@ -463,6 +760,12 @@ const App: React.FC = () => {
       {atlasLoadError && (
         <div className="glass px-4 py-2 rounded-xl border border-amber-500/30 text-amber-300 text-xs font-semibold">
           {atlasLoadError}
+        </div>
+      )}
+
+      {plaidError && (
+        <div className="glass px-4 py-2 rounded-xl border border-rose-500/30 text-rose-300 text-xs font-semibold">
+          {plaidError}
         </div>
       )}
 
