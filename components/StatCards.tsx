@@ -166,7 +166,7 @@ const StatCards: React.FC<StatCardsProps> = ({ branch, originalBranch }) => {
             ) : (
               branchAssetItems.map((asset, idx) => (
                 <p key={idx} className="text-cyan-300">
-                  {asset.label}: {formatCurrency(asset.purchaseAmount)} -> {formatCurrency(asset.currentValue)} ({asset.trend === 'depreciate' ? '-' : '+'}{(asset.annualRate * 100).toFixed(0)}%/yr)
+                  {asset.label}: {formatCurrency(asset.purchaseAmount)} {'\u2192'} {formatCurrency(asset.currentValue)}
                 </p>
               ))
             )}
